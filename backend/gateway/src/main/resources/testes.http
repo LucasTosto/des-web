@@ -1,0 +1,15 @@
+### Receber uma pergunta (HTTP 200 na etapa 1)
+POST http://localhost:8081/perguntas
+Content-Type: application/json
+
+{
+  "texto": "O que é escopo em programação?"
+}
+
+### Rejeitar uma pergunta em branco (HTTP 400)
+POST http://localhost:8081/perguntas
+Content-Type: application/json
+
+{
+  "texto": "   "
+}
