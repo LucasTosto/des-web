@@ -56,7 +56,7 @@ const PerguntaForm = () => {
       {erro && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-red-800">{erro}</p>}
       {recebida && (
         <div role="status" className="rounded-md border border-green-300 bg-green-50 p-3">
-          <p>Pergunta recebida pelo Gateway. O processamento pela IA ainda não está ativo.</p>
+          <p>Pergunta enviada para a fila de processamento. A resposta da IA ainda não é exibida nesta etapa.</p>
           <p className="mt-1 break-all text-sm">Identificador: {recebida.correlation_id}</p>
         </div>
       )}
