@@ -53,12 +53,13 @@ public class EnriquecedorDePrompt {
     private PerfilTutoria identificarPerfil(String texto) {
         PerfilTutoria escolhido = PerfilTutoria.PADRAO;
         int melhor = 0;
-        // Em empate, a ordem de PerfilTutoria favorece precisão.
         for (PerfilTutoria perfil : PerfilTutoria.values()) {
-            int pontos = pontuar(texto, perfil.sinais);
+            int pontos = perfil.pontuar(texto);
             if (pontos > melhor) {
                 melhor = pontos;
                 escolhido = perfil;
+            } else if (pontos > 0 && pontos == melhor) {
+                escolhido = PerfilTutoria.PADRAO;
             }
         }
         return escolhido;

@@ -21,4 +21,8 @@
         <java.version>25</java.version>
         <spring-ai.version>1.1.8</spring-ai.version>
     </properties>
+    <build>
+        <!-- Cada módulo continua executando seus próprios testes a partir da pasta central. -->
+        <testSourceDirectory>${project.basedir}/../tests/${project.artifactId}</testSourceDirectory>
+    </build>
 </project>

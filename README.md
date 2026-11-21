@@ -45,8 +45,9 @@ des-web/
 │   ├── mvnw, mvnw.cmd e .mvn/  # Maven Wrapper do Trabalho
 │   ├── pom.xml
 │   ├── comum/    # módulo Maven reservado para o que for compartilhado
-│   ├── gateway/  # controller, service, dto, resources e testes
-│   └── worker/   # apenas o POM já existente; sem execução nesta etapa
+│   ├── gateway/  # controller, service, dto e resources
+│   ├── worker/   # apenas o POM já existente; sem execução nesta etapa
+│   └── tests/    # testes centralizados, separados por módulo
 └── frontend/     # components, pages, routes, interfaces e util em src/
 ```
 
@@ -75,7 +76,7 @@ A cada `POST /perguntas` válido, o Gateway gera o `correlation_id`, monta um `P
 - **Módulo comum:** a declaração da fila e o formato da mensagem ficam em `comum`, porque o Worker (etapa 3) precisa declará-los de forma idêntica. O RabbitMQ recusa a mesma fila declarada com argumentos diferentes. O Gateway importa a configuração com `@Import(RabbitMQConfig.class)`.
 - **Status HTTP:** a resposta de sucesso passou de 200 para **202 Accepted**. A pergunta foi aceita para processamento, mas ainda não foi respondida; a resposta da IA chegará de forma assíncrona.
 
-Host, porta, usuário e senha do RabbitMQ vêm de `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME` e `RABBITMQ_PASSWORD`, com padrão `localhost`, `5672`, `guest` e `guest`. Com o `compose.yaml`, não é preciso definir nenhuma delas. Os testes do Gateway simulam o RabbitMQ e não precisam dele ligado. As requisições de exemplo estão em [testes.http](backend/gateway/src/main/resources/testes.http), que pode ser executado no VS Code com a extensão REST Client.
+Host, porta, usuário e senha do RabbitMQ vêm de `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME` e `RABBITMQ_PASSWORD`, com padrão `localhost`, `5672`, `guest` e `guest`. Com o `compose.yaml`, não é preciso definir nenhuma delas. Os testes do Gateway simulam o RabbitMQ e não precisam dele ligado. As requisições de exemplo estão em [testes.http](backend/tests/http/testes.http), que pode ser executado no VS Code com a extensão REST Client.
 
 Para conferir a publicação, abra o painel em [localhost:15672](http://localhost:15672) (usuário e senha `guest`), entre em **Queues and Streams → perguntas.queue** e use **Get messages**. Sem ligar o Worker, as perguntas se acumulam na fila. Use a leitura com reenfileiramento se quiser inspecionar uma mensagem sem removê-la.
 
@@ -89,9 +90,9 @@ O Worker é outro processo Spring Boot, sem servidor HTTP. Ele importa a mesma c
 | Criativo | Me dê ideias para um projeto de física | 0,8 |
 | Prático | Como configurar um banco de dados? | 0,2 |
 | Didático | O que é um algoritmo? | 0,4 |
-| Padrão | Escopo? | 0,4 |
+| Padrão | Escopo? | 0,2 |
 
-Expressões de várias palavras têm mais peso. Se o tema não ficar claro, o template deixa o assunto aberto. Isso é uma heurística, não uma interpretação semântica do pedido. A instrução do tutor e a pergunta original ficam separadas; o `correlation_id` é preservado. A temperatura ainda é só um parâmetro preparado: ela será aplicada na chamada Spring AI da etapa 4.
+O perfil é escolhido por expressões, sinônimos e variações de escrita: «qual a diferença» equivale a um pedido de comparação e «me explica» sinaliza um pedido didático. Expressões específicas têm mais peso que verbos isolados; sem sinais suficientes ou em caso de empate, aplica-se o perfil padrão. Se o tema não ficar claro, o template deixa o assunto aberto. Isso é uma heurística, não uma interpretação semântica do pedido. A instrução do tutor e a pergunta original ficam separadas; o `correlation_id` é preservado. A temperatura ainda é só um parâmetro preparado: ela será aplicada na chamada Spring AI da etapa 4.
 
 No Windows, abra um **terceiro terminal na raiz de `des-web`**, selecione o JDK 25 como nos passos do Gateway e execute:
 
@@ -112,6 +113,17 @@ ainda a fazer
 ## Organização da etapa 5
 
 ainda a fazer
+
+## Executar os testes
+
+Todos os arquivos de teste ficam em [backend/tests/](backend/tests/):
+
+- `comum/`: configuração RabbitMQ e serialização JSON.
+- `gateway/`: validação HTTP e publicação com o RabbitMQ simulado.
+- `worker/`: classificação das perguntas e preparação dos prompts.
+- `http/`: requisições manuais; execute [testes.http](backend/tests/http/testes.http) com o Gateway ligado. Para conferir o HTTP 202, ligue também o RabbitMQ.
+
+Com o JDK 25, dentro de `backend/`, rode `.\mvnw.cmd test` no Windows ou `./mvnw test` no macOS/Linux. Os testes automatizados não precisam do RabbitMQ nem do Ollama. Para rodar apenas os testes do Worker e de suas dependências, acrescente `-pl worker -am`.
 
 ## Executar no Windows
 
