@@ -15,7 +15,8 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.core.MessagePostProcessor;
 import org.springframework.amqp.core.MessageProperties;
-import org.springframework.amqp.rabbit.core.RabbitOperations;
+import org.springframework.amqp.core.ReturnedMessage;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -27,12 +28,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -52,12 +52,8 @@ class PerguntaControllerTest {
     private RabbitTemplate rabbitTemplate;
 
     @BeforeEach
-    void executarPublicacaoNoMock() {
-        // invoke() recebe um callback; o mock o executa passando a si mesmo como canal.
-        when(rabbitTemplate.invoke(any())).thenAnswer(invocation -> {
-            RabbitOperations.OperationsCallback<Object> callback = invocation.getArgument(0);
-            return callback.doInRabbit(rabbitTemplate);
-        });
+    void simularConfirmacaoDoBroker() {
+        simularResultado(true, false);
     }
 
     @Test
@@ -70,8 +66,8 @@ class PerguntaControllerTest {
             eq(RabbitMQConfig.PERGUNTAS_EXCHANGE),
             eq(RabbitMQConfig.PERGUNTAS_ROUTING_KEY),
             mensagem.capture(),
-            ajuste.capture());
-        verify(rabbitTemplate).waitForConfirmsOrDie(anyLong());
+            ajuste.capture(),
+            any(CorrelationData.class));
 
         assertEquals(correlationId.toString(), mensagem.getValue().correlationId());
         assertEquals("O que é escopo?", mensagem.getValue().texto());
@@ -94,19 +90,59 @@ class PerguntaControllerTest {
                     .content(corpo))
                 .andExpect(status().isBadRequest());
         }
-        verify(rabbitTemplate, never()).invoke(any());
+        verify(rabbitTemplate, never()).convertAndSend(
+            any(String.class), any(String.class), any(PerguntaMensagem.class),
+            any(MessagePostProcessor.class), any(CorrelationData.class));
     }
 
     @Test
     void deveResponder503QuandoORabbitMQEstiverIndisponivel() throws Exception {
         doThrow(new AmqpConnectException(new ConnectException("Connection refused")))
-            .when(rabbitTemplate).invoke(any());
+            .when(rabbitTemplate).convertAndSend(
+                any(String.class), any(String.class), any(PerguntaMensagem.class),
+                any(MessagePostProcessor.class), any(CorrelationData.class));
 
         mockMvc.perform(post("/perguntas")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"texto\":\"O que é escopo?\"}"))
             .andExpect(status().isServiceUnavailable())
             .andExpect(jsonPath("$.errorCode").value(503));
+    }
+
+    @Test
+    void deveResponder503QuandoBrokerConfirmaMasDevolveMensagemSemRota() throws Exception {
+        simularResultado(true, true);
+        verificarPublicacaoNaoConfirmada();
+    }
+
+    @Test
+    void deveResponder503QuandoBrokerRejeitaPublicacao() throws Exception {
+        simularResultado(false, false);
+        verificarPublicacaoNaoConfirmada();
+    }
+
+    private void simularResultado(boolean ack, boolean devolvida) {
+        doAnswer(invocation -> {
+            CorrelationData dados = invocation.getArgument(4);
+            if (devolvida) {
+                dados.setReturned(new ReturnedMessage(
+                    new Message(new byte[0], new MessageProperties()),
+                    312, "NO_ROUTE", RabbitMQConfig.PERGUNTAS_EXCHANGE,
+                    RabbitMQConfig.PERGUNTAS_ROUTING_KEY));
+            }
+            dados.getFuture().complete(new CorrelationData.Confirm(ack, null));
+            return null;
+        }).when(rabbitTemplate).convertAndSend(
+            any(String.class), any(String.class), any(PerguntaMensagem.class),
+            any(MessagePostProcessor.class), any(CorrelationData.class));
+    }
+
+    private void verificarPublicacaoNaoConfirmada() throws Exception {
+        mockMvc.perform(post("/perguntas")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"texto\":\"O que é escopo?\"}"))
+            .andExpect(status().isServiceUnavailable())
+            .andExpect(jsonPath("$.correlation_id").doesNotExist());
     }
 
     private UUID receberPergunta() throws Exception {

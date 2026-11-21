@@ -10,7 +10,7 @@ Formação dos grupos: até quatro alunos por equipe, com no máximo 16 grupos.
 | --- | --- | --- |
 | 1 | Tela de pergunta e Gateway HTTP: validar o texto e retornar um `correlation_id` | Implementada |
 | 2 | Publicação imediata no RabbitMQ: configurar a exchange, `perguntas.queue` durável, mensagens persistentes e payload JSON com Jackson | Implementada |
-| 3 | Worker Spring Boot sem Starter Web: consumir a fila, extrair a pergunta e seu identificador e montar o prompt de tutor | Pendente |
+| 3 | Worker sem Starter Web: consumir a fila e preparar o prompt com tema, perfil e temperatura | Implementada sem chamada à IA |
 | 4 | Worker: consultar a IA com Spring AI, tratar falhas com intervalo e retry e publicar a resposta JSON com o identificador original em `respostas.exchange`, roteada à fila durável `respostas.queue` | Pendente |
 | 5 | Retorno via Web STOMP do RabbitMQ: inscrição do React com `@stomp/stompjs` no destino da sessão correta, correlação e exibição da resposta | Pendente |
 
@@ -70,18 +70,40 @@ compose.yaml  # RabbitMQ local, igual no Windows e no macOS
 A cada `POST /perguntas` válido, o Gateway gera o `correlation_id`, monta um `PerguntaMensagem` e o publica na exchange `perguntas.exchange` (tipo direct) com a routing key `perguntas`, que a entrega à fila `perguntas.queue`. O Gateway não chama a IA.
 
 - **Durabilidade:** exchange e fila são duráveis e a mensagem é publicada como persistente (`delivery_mode` 2), então as perguntas ainda não consumidas sobrevivem a um reinício do RabbitMQ.
-- **Confirmação:** o Gateway usa *publisher confirms* e só devolve o `correlation_id` depois que o RabbitMQ confirma o recebimento. Se o broker estiver desligado ou não confirmar em 5 segundos, a resposta é HTTP 503, e o React avisa que a fila está indisponível.
+- **Confirmação:** o Gateway exige confirmação positiva e verifica se o RabbitMQ devolveu a mensagem por falta de rota. Retorna HTTP 503 em caso de devolução, rejeição, indisponibilidade ou se não receber a confirmação em até 5 segundos após publicar. Um timeout é inconclusivo: a mensagem pode ter entrado na fila. Reenviar não é uma operação sem duplicatas.
 - **Serialização:** `Jackson2JsonMessageConverter` com o `ObjectMapper` do Spring Boot. A mensagem trafega como `application/json`, por exemplo `{"correlation_id":"<UUID>","texto":"O que é escopo?"}`. O `correlation_id` também vai na propriedade AMQP `correlation_id`.
 - **Módulo comum:** a declaração da fila e o formato da mensagem ficam em `comum`, porque o Worker (etapa 3) precisa declará-los de forma idêntica. O RabbitMQ recusa a mesma fila declarada com argumentos diferentes. O Gateway importa a configuração com `@Import(RabbitMQConfig.class)`.
 - **Status HTTP:** a resposta de sucesso passou de 200 para **202 Accepted**. A pergunta foi aceita para processamento, mas ainda não foi respondida; a resposta da IA chegará de forma assíncrona.
 
 Host, porta, usuário e senha do RabbitMQ vêm de `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME` e `RABBITMQ_PASSWORD`, com padrão `localhost`, `5672`, `guest` e `guest`. Com o `compose.yaml`, não é preciso definir nenhuma delas. Os testes do Gateway simulam o RabbitMQ e não precisam dele ligado. As requisições de exemplo estão em [testes.http](backend/gateway/src/main/resources/testes.http), que pode ser executado no VS Code com a extensão REST Client.
 
-Para conferir a publicação, abra o painel em [localhost:15672](http://localhost:15672) (usuário e senha `guest`), entre em **Queues and Streams → perguntas.queue** e use **Get messages**. Como ainda não há Worker, as perguntas se acumulam na fila; elas serão consumidas a partir da etapa 3.
+Para conferir a publicação, abra o painel em [localhost:15672](http://localhost:15672) (usuário e senha `guest`), entre em **Queues and Streams → perguntas.queue** e use **Get messages**. Sem ligar o Worker, as perguntas se acumulam na fila. Use a leitura com reenfileiramento se quiser inspecionar uma mensagem sem removê-la.
 
 ## Organização da etapa 3
 
-ainda a fazer
+O Worker é outro processo Spring Boot, sem servidor HTTP. Ele importa a mesma configuração Jackson/RabbitMQ do módulo `comum` e usa `PerguntaListener` para consumir `perguntas.queue`. Em seguida, `EnriquecedorDePrompt` analisa termos e expressões (sem diferenciar acentos ou maiúsculas) e escolhe o tema e o perfil separadamente.
+
+| Perfil | Exemplo de pedido | Temperatura preparada |
+| --- | --- | --- |
+| Analítico | Compare dois algoritmos | 0,0 |
+| Criativo | Me dê ideias para um projeto de física | 0,8 |
+| Prático | Como configurar um banco de dados? | 0,2 |
+| Didático | O que é um algoritmo? | 0,4 |
+| Padrão | Escopo? | 0,4 |
+
+Expressões de várias palavras têm mais peso. Se o tema não ficar claro, o template deixa o assunto aberto. Isso é uma heurística, não uma interpretação semântica do pedido. A instrução do tutor e a pergunta original ficam separadas; o `correlation_id` é preservado. A temperatura ainda é só um parâmetro preparado: ela será aplicada na chamada Spring AI da etapa 4.
+
+No Windows, abra um **terceiro terminal na raiz de `des-web`**, selecione o JDK 25 como nos passos do Gateway e execute:
+
+```powershell
+cd .\backend
+.\mvnw.cmd -pl worker -am package
+java -jar .\worker\target\worker-1.0.0-SNAPSHOT.jar
+```
+
+No macOS, na pasta `backend`, use `./mvnw -pl worker -am package` e `java -jar worker/target/worker-1.0.0-SNAPSHOT.jar`.
+
+Envie uma pergunta com o RabbitMQ e o Gateway ligados. O Worker registra o ID, tema, perfil e temperatura no terminal, sem registrar a pergunta. **Por enquanto o Worker consome as mensagens e não publica respostas.** Deixe-o desligado se quiser só inspecionar a etapa 2 no RabbitMQ. Não é necessário iniciar o Ollama.
 
 ## Organização da etapa 4
 
@@ -142,7 +164,7 @@ Abra o endereço que o Vite imprimir, normalmente [localhost:5173](http://localh
 | `error during connect` ou `Cannot connect to the Docker daemon` | Abra o Docker Desktop e espere ele indicar que está em execução |
 | Erro do `docker compose` citando `configs` ou `content` | Docker Desktop desatualizado: atualize-o, pois o `compose.yaml` usa `configs` com conteúdo inline |
 | `port is already allocated` na porta 5672 ou 15672 | Outro RabbitMQ já está rodando (instalação nativa ou outro container); pare-o ou use apenas ele |
-| A tela mostra "A fila de perguntas está indisponível" (HTTP 503) | O RabbitMQ não está rodando: `docker compose up -d` e envie de novo; não é preciso reiniciar o Gateway |
+| A tela mostra "Não foi possível confirmar o envio" (HTTP 503) | Confira se o RabbitMQ está rodando e se a fila está vinculada à exchange. Em caso de timeout, confira a fila antes de reenviar |
 | A tela mostra "Verifique se o Gateway está rodando" | O Terminal 1 foi fechado ou o Maven falhou; confira se apareceu `Started GatewayApplication` |
 | Erro de compilação `release 25` ou `JAVA_HOME` inválido | Confira `java -version` e o ajuste de `JAVA_HOME` acima |
 | `npm.ps1 cannot be loaded` | Use `npm.cmd`, como nos exemplos |
