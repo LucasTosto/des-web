@@ -125,17 +125,60 @@ Todos os arquivos de teste ficam em [backend/tests/](backend/tests/):
 
 Com o JDK 25, dentro de `backend/`, rode `.\mvnw.cmd test` no Windows ou `./mvnw test` no macOS/Linux. Os testes automatizados não precisam do RabbitMQ nem do Ollama. Para rodar apenas os testes do Worker e de suas dependências, acrescente `-pl worker -am`.
 
+### Testes manuais das etapas 2 e 3
+
+Use o [testes.http](backend/tests/http/testes.http) com a extensão REST Client ou envie as perguntas pela tela do React. O React é opcional para quem testar direto por HTTP.
+
+**Etapa 2 — envio e persistência.** Ligue RabbitMQ e Gateway, mas deixe o Worker parado. Envie uma pergunta válida e confira o `202 Accepted` e o `correlation_id` retornado. No painel do RabbitMQ, abra **Queues and Streams → perguntas.queue**. Confira que **Ready** aumentou e, em **Get messages**, escolha o modo de leitura que reenfileira a mensagem (`requeue=true`); o JSON deve conter o mesmo ID e o texto enviado. A requisição em branco deve retornar `400` sem acrescentar mensagem.
+
+Se quiser comprovar a persistência, ainda com o Worker parado, rode `docker compose restart rabbitmq` na raiz, aguarde o ping e confira se a pergunta continua na fila. Se quiser conferir a falha de conexão, pare temporariamente o RabbitMQ com `docker compose stop rabbitmq`, envie uma pergunta e espere `503`. Depois, suba-o novamente com `docker compose up -d`.
+
+**Etapa 3 — consumo e escolha do perfil.** Mantenha RabbitMQ e Gateway ligados. Inicie o Worker em outro terminal e envie os exemplos abaixo. Ele pode consumir as perguntas que ficaram na fila da etapa 2 primeiro; use o `correlation_id` da requisição para achar a linha certa no terminal do Worker.
+
+| Sugestões | Perfil e temperatura no log |
+| --- | --- |
+| Qual a diferença entre Java e Python? | `ANALITICO`, `0.0` |
+| Me dê ideias para um projeto de física | `CRIATIVO`, `0.8` |
+| Como eu consigo configurar o React? | `PRATICO`, `0.2` |
+| O que é um algoritmo? | `DIDATICO`, `0.4` |
+| Tenho uma dúvida sobre Python | `PADRAO`, `0.2` |
+
+Com o Worker ativo, a mensagem pode sair da fila antes de aparecer no painel. O que confirma o teste é a linha `Pergunta preparada` com o mesmo ID, tema, perfil e temperatura. **Nenhuma resposta da IA é esperada** nesta etapa.
+
 ## Executar no Windows
 
-Pré-requisitos: JDK 25, npm e Node.js 20.19 ou superior na linha 20.x, ou Node.js 22.12 ou superior, e Docker Desktop para o RabbitMQ. A ordem de execução é: **RabbitMQ, Gateway e React**. Sem o RabbitMQ, o Gateway inicia normalmente, mas cada envio de pergunta responde HTTP 503. Abra os terminais **na raiz do clone de `des-web`**, onde estão `README.md`, `compose.yaml`, `backend/` e `frontend/`. Não é necessário clonar os exercícios nem instalar o Maven separadamente: o Maven Wrapper do projeto baixa o Maven no primeiro uso se ele ainda não estiver em cache.
+Rode os comandos no **PowerShell do Windows**, a partir da raiz do clone de `des-web` (a pasta que contém `compose.yaml`). A ordem é **RabbitMQ → Gateway → React (opcional nos testes HTTP) → Worker (só na etapa 3)**. Não é preciso instalar MySQL, Ollama ou Maven separadamente para essas etapas; o projeto já tem Maven Wrapper.
 
-**RabbitMQ.** Se o Docker Desktop ainda não estiver instalado, em um PowerShell como administrador rode `winget install --id Docker.DockerDesktop --exact`, ou use o [instalador oficial](https://docs.docker.com/desktop/setup/install/windows-install/). O instalador pode pedir para habilitar o WSL 2 e reiniciar o Windows. Abra o Docker Desktop, espere ele indicar que está em execução e, na raiz de `des-web`:
+### 1. Instalar o que estiver faltando
+
+- **Java:** instale o [Temurin JDK 25](https://adoptium.net/installation/). Use o **JDK**, não só o JRE. Confira com `java -version` e `javac -version`.
+- **React:** instale [Node.js e npm](https://nodejs.org/en/download) se for usar a interface: Node 20.19+ na linha 20.x ou 22.12+. Confira com `node -v` e `npm.cmd -v`.
+- **RabbitMQ:** instale o [Docker Desktop para Windows](https://docs.docker.com/desktop/setup/install/windows-install/) se ainda não tiver. Pelo WinGet, a alternativa é `winget install --id Docker.DockerDesktop --exact`. Use o backend WSL 2 e siga as instruções do instalador se ele pedir para habilitar o recurso ou reiniciar. Ter o Ubuntu no WSL não significa que o Docker esteja instalado. Não é preciso abrir o Ubuntu nem instalar Docker dentro dele para usar este projeto pelo PowerShell.
+
+### 2. Ligar o RabbitMQ
+
+Abra o **Docker Desktop** pelo menu Iniciar e espere o motor iniciar. Abra um PowerShell novo; se usar o terminal integrado e ele não reconhecer os comandos após a instalação, feche e reabra o VS Code inteiro. Na raiz de `des-web`:
 
 ```powershell
+docker compose version
+docker info --format '{{.ServerVersion}}'
 docker compose up -d
+docker compose ps
+docker compose exec rabbitmq rabbitmq-diagnostics -q ping
 ```
 
-O primeiro uso baixa a imagem do RabbitMQ. O comando volta ao prompt e o RabbitMQ continua rodando em segundo plano; o painel fica em [localhost:15672](http://localhost:15672) (usuário e senha `guest`). Para parar, use `docker compose stop`; para iniciar de novo, `docker compose start` (ou `docker compose up -d`). As filas e as mensagens ficam em um volume do Docker e não se perdem ao parar ou recriar o container. Se preferir instalar o RabbitMQ diretamente no Windows (Erlang + instalador), o projeto funciona igual, desde que ele responda em `localhost:5672` com o usuário `guest` e o plugin `rabbitmq_web_stomp` esteja habilitado para a etapa 5.
+Rode `up -d` depois que `docker info` mostrar a versão do servidor. No primeiro uso o Compose baixa a imagem. A saída de `ps` deve mostrar `tutoria-rabbitmq` como `Up`; se o ping ainda falhar, espere alguns segundos e repita. O painel fica em [localhost:15672](http://localhost:15672), com usuário e senha `guest`, e a aplicação se conecta ao RabbitMQ na porta `5672`.
+
+Se `docker` ainda não for reconhecido, mas o Docker Desktop já estiver instalado em `C:\Program Files\Docker\Docker`, rode no **mesmo terminal**:
+
+```powershell
+$env:Path = "C:\Program Files\Docker\Docker\resources\bin;$env:Path"
+docker compose version
+```
+
+Esse ajuste vale apenas para a sessão atual. Se a instalação estiver em outro lugar, aponte para a pasta que contém `docker.exe`. Se `compose version` funcionar, mas `docker info` falhar com `npipe`, `docker_engine` ou `daemon`, o caminho está correto: confira se o motor do Docker Desktop terminou de iniciar e tente `docker info` de novo.
+
+### 3. Ligar o Gateway, o React e, quando necessário, o Worker
 
 No terminal do Gateway, rode `java -version`. Se aparecer Java 8 ou outra versão que não seja 25, ou se `JAVA_HOME` apontar para outro JDK, ajuste as variáveis abaixo. O caminho é um exemplo da instalação do Gabriel: em outro computador, use o caminho do seu JDK 25 (a pasta que contém `bin\javac.exe`). As variáveis são alteradas apenas neste terminal:
 
@@ -166,19 +209,21 @@ npm.cmd ci
 npm.cmd run dev
 ```
 
-Abra o endereço que o Vite imprimir, normalmente [localhost:5173](http://localhost:5173). Escreva uma pergunta e clique em **Enviar pergunta**. A confirmação deve mostrar o identificador, e a pergunta deve aparecer em `perguntas.queue` no painel do RabbitMQ. O Vite encaminha `/api/perguntas` para `http://localhost:8081/perguntas`, como no proxy usado em sala. Use `Ctrl+C` para parar cada servidor. O RabbitMQ continua rodando até `docker compose stop`.
+Abra o endereço que o Vite imprimir, normalmente [localhost:5173](http://localhost:5173). Escreva uma pergunta e clique em **Enviar pergunta**. A confirmação deve mostrar o identificador. Para ver a mensagem na fila, faça o teste manual da etapa 2 com o Worker desligado. O Vite encaminha `/api/perguntas` para `http://localhost:8081/perguntas`, como no proxy usado em sala. Use `Ctrl+C` para parar cada servidor. O RabbitMQ continua rodando em segundo plano depois que você fecha o terminal. Para pará-lo sem excluir o volume de dados, rode `docker compose stop` na raiz do clone. Evite `docker compose down -v` se quiser preservar as mensagens. Para voltar, abra o Docker Desktop e rode `docker compose up -d` novamente.
+
+**Terminal 3 — Worker:** só ligue depois de conferir a fila na etapa 2. [Veja os comandos do Worker](#organização-da-etapa-3). Ajuste o JDK 25 nesse terminal também, pois as variáveis do Gateway não são compartilhadas.
 
 ### Problemas comuns
 
 | Sintoma | O que conferir |
 | --- | --- |
-| `docker` não é reconhecido | Instale o Docker Desktop e reabra o PowerShell |
-| `error during connect` ou `Cannot connect to the Docker daemon` | Abra o Docker Desktop e espere ele indicar que está em execução |
+| `docker` não é reconhecido | Confira a instalação e reabra o terminal, ou ajuste o `PATH` da sessão como descrito acima |
+| `npipe`, `docker_engine` ou `Cannot connect to the Docker daemon` | Abra o Docker Desktop e espere `docker info` mostrar a versão do servidor |
 | Erro do `docker compose` citando `configs` ou `content` | Docker Desktop desatualizado: atualize-o, pois o `compose.yaml` usa `configs` com conteúdo inline |
 | `port is already allocated` na porta 5672 ou 15672 | Outro RabbitMQ já está rodando (instalação nativa ou outro container); pare-o ou use apenas ele |
 | A tela mostra "Não foi possível confirmar o envio" (HTTP 503) | Confira se o RabbitMQ está rodando e se a fila está vinculada à exchange. Em caso de timeout, confira a fila antes de reenviar |
 | A tela mostra "Verifique se o Gateway está rodando" | O Terminal 1 foi fechado ou o Maven falhou; confira se apareceu `Started GatewayApplication` |
-| Erro de compilação `release 25` ou `JAVA_HOME` inválido | Confira `java -version` e o ajuste de `JAVA_HOME` acima |
+| `release 25`, `JAVA_HOME` inválido ou `UnsupportedClassVersionError` | Confira `java -version` no mesmo terminal antes de rodar o Maven ou o JAR |
 | `npm.ps1 cannot be loaded` | Use `npm.cmd`, como nos exemplos |
 
 ## Executar no macOS
