@@ -1,6 +1,6 @@
 # Sistema de Tutoria Assíncrono com IA
 
-Trabalho de Desenvolvimento Web da UFF. O sistema final receberá perguntas pelo React, encaminhará cada uma pelo Gateway Spring Boot ao RabbitMQ e usará um Worker independente para consultar a IA com Spring AI. A resposta voltará ao navegador por STOMP sobre WebSocket. O Gateway não chamará a IA diretamente.
+Trabalho de Desenvolvimento Web da UFF. O sistema final receberá perguntas pelo React, encaminhará cada uma pelo Gateway Spring Boot ao RabbitMQ e usará um Worker independente para consultar a IA com Spring AI. Pelo plano atual, a resposta voltará ao navegador por STOMP sobre WebSocket; o SSE é uma alternativa aceita pelo professor (veja [Decisões pendentes](#decisões-pendentes-antes-da-etapa-5)). O Gateway não chamará a IA diretamente.
 
 Formação dos grupos: até quatro alunos por equipe, com no máximo 16 grupos.
 
@@ -15,6 +15,27 @@ Formação dos grupos: até quatro alunos por equipe, com no máximo 16 grupos.
 | 5 | Retorno via Web STOMP do RabbitMQ: inscrição do React com `@stomp/stompjs` no destino da sessão correta, correlação e exibição da resposta | Pendente |
 
 Na etapa 5, o destino de cada sessão precisa isolar as respostas no broker. Colocar todos os navegadores como consumidores concorrentes de uma única fila não garante que cada resposta chegue ao navegador que fez a pergunta. O `correlation_id` identifica uma pergunta e será preservado no processamento; o roteamento da sessão será definido nessa etapa.
+
+### Decisões pendentes antes da etapa 5
+
+As etapas 1 a 4 não dependem destes dois pontos, mas ambos precisam ser decididos **antes de começar a etapa 5**, porque mudam como a resposta chega ao usuário certo.
+
+**1. Autenticação com JWT: recomendada, ainda não implementada.** A especificação não lista o JWT entre os requisitos obrigatórios, mas o professor o recomenda fortemente: a chamada à IA tem custo, e cada resposta pertence a um único usuário. Sem autenticação, qualquer pessoa pode enviar perguntas ou tentar ler a resposta de outra. Quando for implementado:
+
+- o Gateway passa a exigir `Authorization: Bearer <token>` em `POST /perguntas`. `SecurityConfig`, `JwtService`, `JwtAuthenticationFilter` e o login do exercício 20 do professor (`backend/Exercicio20-apirestful-com-spring-security`) podem ser reaproveitados;
+- `PerguntaMensagem`, no módulo `comum`, ganha o identificador do usuário extraído do token, e o Worker o devolve junto com a resposta, para que ela seja roteada a esse usuário;
+- o canal de retorno da etapa 5 só entrega respostas ao usuário dono do token.
+
+**2. Caminho de retorno: STOMP (plano atual) ou SSE (alternativa aceita).** A especificação permite os dois:
+
+| | STOMP sobre WebSocket (itens 2.1 a 2.4 da especificação) | SSE pelo Gateway (itens 3.1 a 3.4 da especificação) |
+| --- | --- | --- |
+| Quem entrega a resposta ao React | O RabbitMQ, pelo plugin Web STOMP (porta 15674) | O Gateway: um `@RabbitListener` em `respostas.queue` envia pelo `SseEmitter` do usuário |
+| Biblioteca no React | `@stomp/stompjs` (já declarada) | `@microsoft/fetch-event-source` (permite enviar o JWT no header) |
+| Isolamento por usuário | Feito no broker: uma fila ou routing key exclusiva por usuário | Feito no Gateway: mapa `userId → SseEmitter` |
+| JWT | Validado pelo RabbitMQ (plugin OAuth 2) ou por um intermediário; mais trabalhoso | Validado pelo Spring Security, como no exercício 20 |
+
+O professor descreve o SSE como o caminho que "parece ser mais simples", e ele combina diretamente com o JWT. Se o grupo escolher o SSE, é preciso atualizar a linha da etapa 5 na tabela acima e esta seção. Nesse caso, o React passa a usar `fetch-event-source` no lugar de `@stomp/stompjs`, e o plugin `rabbitmq_web_stomp` deixa de ser necessário.
 
 ## Organização da etapa 1
 
