@@ -1,0 +1,25 @@
+# RabbitMQ do trabalho. Na raiz de des-web: docker compose up -d
+services:
+  rabbitmq:
+    image: rabbitmq:4.4-management
+    container_name: tutoria-rabbitmq
+    # O RabbitMQ guarda os dados por nome de nó (rabbit@<hostname>). Com o hostname fixo,
+    # filas duráveis e mensagens persistentes sobrevivem quando o container é recriado.
+    hostname: tutoria-rabbitmq
+    configs:
+      - source: plugins
+        target: /etc/rabbitmq/enabled_plugins
+    ports:
+      - "5672:5672"   # AMQP: Gateway e Worker
+      - "15672:15672" # painel: http://localhost:15672 (guest/guest)
+      - "15674:15674" # Web STOMP
+    volumes:
+      - rabbitmq-dados:/var/lib/rabbitmq
+
+configs:
+  # Painel web (15672) e STOMP sobre WebSocket (15674, usado na etapa 5).
+  plugins:
+    content: "[rabbitmq_management,rabbitmq_web_stomp]."
+
+volumes:
+  rabbitmq-dados:

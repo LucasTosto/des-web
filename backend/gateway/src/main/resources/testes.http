@@ -1,4 +1,4 @@
-### Receber uma pergunta (HTTP 200 na etapa 1)
+### Enviar uma pergunta para perguntas.queue (HTTP 202; 503 se o RabbitMQ estiver desligado)
 POST http://localhost:8081/perguntas
 Content-Type: application/json
 
@@ -6,7 +6,7 @@ Content-Type: application/json
   "texto": "O que é escopo em programação?"
 }
 
-### Rejeitar uma pergunta em branco (HTTP 400)
+### Rejeitar uma pergunta em branco (HTTP 400, nada é publicado)
 POST http://localhost:8081/perguntas
 Content-Type: application/json
 
