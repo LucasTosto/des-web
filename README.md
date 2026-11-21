@@ -83,3 +83,33 @@ npm.cmd run dev
 ```
 
 Abra o endereço que o Vite imprimir, normalmente [localhost:5173](http://localhost:5173). Escreva uma pergunta e clique em **Enviar pergunta**. A confirmação deve mostrar o identificador. O Vite encaminha `/api/perguntas` para `http://localhost:8081/perguntas`, como no proxy usado em sala. Use `Ctrl+C` para parar cada servidor.
+
+## Executar no macOS
+
+Pré-requisitos iguais aos do Windows: JDK 25, Node.js e npm. Com o [Homebrew](https://brew.sh), instale e coloque no PATH (as fórmulas abaixo não substituem outro Java ou Node que já esteja configurado):
+
+```bash
+brew install openjdk@25 node@24
+echo 'export JAVA_HOME="/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home"' >> ~/.zprofile
+echo 'export PATH="$JAVA_HOME/bin:/opt/homebrew/opt/node@24/bin:$PATH"' >> ~/.zprofile
+```
+
+Feche e reabra o terminal e confirme que `java -version` mostra **25**. Os comandos partem da raiz de `des-web`, em dois terminais.
+
+**Terminal 1 — Gateway** (porta 8081):
+
+```bash
+cd backend
+./mvnw -pl gateway -am package
+java -jar gateway/target/gateway-1.0.0-SNAPSHOT.jar
+```
+
+**Terminal 2 — React:**
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+O `mvnw` é versionado com permissão de execução e fim de linha LF (veja `.gitattributes`). Se aparecer `permission denied`, rode `chmod +x backend/mvnw`.
