@@ -1,10 +1,11 @@
-package br.uff.tutoria.gateway.controller;
+package br.uff.tutoria.gateway;
 
 import java.net.ConnectException;
 import java.util.UUID;
 
 import br.uff.tutoria.comum.config.RabbitMQConfig;
 import br.uff.tutoria.comum.dto.PerguntaMensagem;
+import br.uff.tutoria.gateway.controller.PerguntaController;
 import br.uff.tutoria.gateway.service.PerguntaService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;

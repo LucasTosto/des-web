@@ -51,4 +51,23 @@ public class RabbitMQConfig {
     public MessageConverter jsonMessageConverter(ObjectMapper objectMapper) {
         return new Jackson2JsonMessageConverter(objectMapper, "br.uff.tutoria.comum.dto");
     }
+
+    public static final String RESPOSTAS_EXCHANGE = "respostas.exchange";
+    public static final String RESPOSTAS_QUEUE = "respostas.queue";
+    public static final String RESPOSTAS_ROUTING_KEY = "respostas";
+
+    @Bean
+    public DirectExchange respostasExchange() {
+        return ExchangeBuilder.directExchange(RESPOSTAS_EXCHANGE).durable(true).build();
+    }
+
+    @Bean
+    public Queue respostasQueue() {
+        return QueueBuilder.durable(RESPOSTAS_QUEUE).build();
+    }
+
+    @Bean
+    public Binding respostasBinding(Queue respostasQueue, DirectExchange respostasExchange) {
+        return BindingBuilder.bind(respostasQueue).to(respostasExchange).with(RESPOSTAS_ROUTING_KEY);
+    }
 }
