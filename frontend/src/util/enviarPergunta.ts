@@ -10,6 +10,7 @@ const enviarPergunta = async (pergunta: Pergunta, clientId: string): Promise<Per
   });
 
   if (!response.ok) {
+    if (response.status === 401) throw new Error("Sessão expirada. Recarregue a página.");
     if (response.status === 400) throw new Error("Informe o texto da pergunta.");
     if (response.status === 503) throw new Error("Não foi possível confirmar o envio. A pergunta pode já estar na fila.");
     throw new Error("Não foi possível enviar a pergunta. Verifique se o Gateway está rodando.");

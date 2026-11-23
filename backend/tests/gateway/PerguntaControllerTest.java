@@ -5,7 +5,10 @@ import java.util.UUID;
 
 import br.uff.tutoria.comum.config.RabbitMQConfig;
 import br.uff.tutoria.comum.dto.PerguntaMensagem;
+import br.uff.tutoria.comum.dto.RespostaMensagem;
 import br.uff.tutoria.gateway.controller.PerguntaController;
+import br.uff.tutoria.gateway.controller.SessaoController;
+import br.uff.tutoria.gateway.service.CorrelationService;
 import br.uff.tutoria.gateway.service.PerguntaService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,13 +37,14 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // O RabbitMQ é simulado: os testes não exigem o broker ligado.
-@WebMvcTest(PerguntaController.class)
-@Import(PerguntaService.class)
+@WebMvcTest({PerguntaController.class, SessaoController.class})
+@Import({PerguntaService.class, CorrelationService.class})
 class PerguntaControllerTest {
 
     @Autowired
@@ -52,8 +56,14 @@ class PerguntaControllerTest {
     @MockitoBean
     private RabbitTemplate rabbitTemplate;
 
+    @Autowired
+    private CorrelationService sessoes;
+
+    private String clientId;
+
     @BeforeEach
     void simularConfirmacaoDoBroker() {
+        clientId = sessoes.criarSessao();
         simularResultado(true, false);
     }
 
@@ -86,7 +96,7 @@ class PerguntaControllerTest {
     @Test
     void deveRejeitarPerguntaEmBrancoOuSemTextoSemPublicar() throws Exception {
         for (String corpo : new String[]{"{\"texto\":\"   \"}", "{\"texto\":\"\"}", "{\"texto\":null}", "{}"}) {
-            mockMvc.perform(post("/perguntas")
+            mockMvc.perform(post("/perguntas").header("X-Client-Id", clientId)
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(corpo))
                 .andExpect(status().isBadRequest());
@@ -103,7 +113,7 @@ class PerguntaControllerTest {
                 any(String.class), any(String.class), any(PerguntaMensagem.class),
                 any(MessagePostProcessor.class), any(CorrelationData.class));
 
-        mockMvc.perform(post("/perguntas")
+        mockMvc.perform(post("/perguntas").header("X-Client-Id", clientId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"texto\":\"O que é escopo?\"}"))
             .andExpect(status().isServiceUnavailable())
@@ -120,6 +130,33 @@ class PerguntaControllerTest {
     void deveResponder503QuandoBrokerRejeitaPublicacao() throws Exception {
         simularResultado(false, false);
         verificarPublicacaoNaoConfirmada();
+    }
+
+    @Test
+    void deveCriarSessaoERejeitarIdentificadorNaoEmitido() throws Exception {
+        mockMvc.perform(post("/sessoes"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.clientId").isNotEmpty());
+
+        mockMvc.perform(post("/perguntas").header("X-Client-Id", "inventado")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"texto\":\"O que é escopo?\"}"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void deveRecuperarRespostaApenasNaSessaoDaPergunta() throws Exception {
+        String id = receberPergunta().toString();
+        var consulta = "/perguntas/" + id + "/resposta";
+        mockMvc.perform(get(consulta).header("X-Client-Id", clientId))
+            .andExpect(status().isAccepted());
+        sessoes.registrarResposta(RespostaMensagem.ok(id, "Resposta"));
+        mockMvc.perform(get(consulta).header("X-Client-Id", sessoes.criarSessao()))
+            .andExpect(status().isNotFound());
+        mockMvc.perform(get(consulta).header("X-Client-Id", clientId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.correlation_id").value(id))
+            .andExpect(jsonPath("$.texto").value("Resposta"));
     }
 
     private void simularResultado(boolean ack, boolean devolvida) {
@@ -139,7 +176,7 @@ class PerguntaControllerTest {
     }
 
     private void verificarPublicacaoNaoConfirmada() throws Exception {
-        mockMvc.perform(post("/perguntas")
+        mockMvc.perform(post("/perguntas").header("X-Client-Id", clientId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"texto\":\"O que é escopo?\"}"))
             .andExpect(status().isServiceUnavailable())
@@ -147,7 +184,7 @@ class PerguntaControllerTest {
     }
 
     private UUID receberPergunta() throws Exception {
-        String resposta = mockMvc.perform(post("/perguntas")
+        String resposta = mockMvc.perform(post("/perguntas").header("X-Client-Id", clientId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"texto\":\"O que é escopo?\"}"))
             .andExpect(status().isAccepted())

@@ -1,52 +1,38 @@
-
 import { Client } from "@stomp/stompjs";
 import type { Resposta } from "../interfaces/Resposta";
 
-export const clientId = crypto.randomUUID();
-
-const listeners = new Set<(resposta: Resposta) => void>();
-
-export const aoReceberResposta = (
-  callback: (resposta: Resposta) => void
+export const abrirWebSocket = (
+  clientId: string,
+  aoReceber: (resposta: Resposta) => void,
+  aoMudarConexao: (conectado: boolean) => void,
 ) => {
-  listeners.add(callback);
+  const url = new URL("/ws", window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
 
-  // Retorna uma função para cancelar a inscrição do componente.
-  return () => {
-    listeners.delete(callback);
-  };
+  const client = new Client({
+    brokerURL: url.href,
+    connectHeaders: { "client-id": clientId },
+    reconnectDelay: 3000,
+    connectionTimeout: 8000,
+    onConnect: () => {
+      client.subscribe("/user/queue/respostas", (message) => {
+        try {
+          const resposta: Resposta = JSON.parse(message.body);
+          if (typeof resposta.correlation_id === "string" &&
+              typeof resposta.texto === "string" &&
+              (resposta.status === "OK" || resposta.status === "ERRO")) {
+            aoReceber(resposta);
+          }
+        } catch {
+          // A consulta HTTP de recuperação continua funcionando.
+        }
+      });
+      aoMudarConexao(true);
+    },
+    onStompError: () => aoMudarConexao(false),
+    onWebSocketClose: () => aoMudarConexao(false),
+  });
+  client.activate();
+
+  return () => { void client.deactivate(); };
 };
-
-export const stompClient = new Client({
-  brokerURL: "ws://localhost:8080/ws",
-
-  connectHeaders: {
-    "client-id": clientId,
-  },
-
-  reconnectDelay: 5000,
-
-  onConnect: () => {
-    console.log("Conectado ao Gateway!");
-
-    stompClient.subscribe("/user/queue/respostas", (message) => {
-      try {
-        const resposta: Resposta = JSON.parse(message.body);
-
-        console.log("Resposta recebida:", resposta);
-
-        listeners.forEach((callback) => callback(resposta));
-      } catch (error) {
-        console.error("Erro ao interpretar a resposta:", error);
-      }
-    });
-  },
-
-  onStompError: (frame) => {
-    console.error("Erro STOMP:", frame.headers["message"]);
-  },
-
-  onWebSocketError: (error) => {
-    console.error("Erro na conexão WebSocket:", error);
-  },
-});

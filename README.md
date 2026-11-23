@@ -1,209 +1,80 @@
-# Sistema de Tutoria Assíncrono com IA
+# Tutoria assíncrona com IA
 
-Trabalho de Desenvolvimento Web da UFF. O sistema final receberá perguntas pelo React, encaminhará cada uma pelo Gateway Spring Boot ao RabbitMQ e usará um Worker independente para consultar a IA com Spring AI. Pelo plano atual, a resposta voltará ao navegador por STOMP sobre WebSocket; o SSE é uma alternativa aceita pelo professor (veja [Decisões pendentes](#decisões-pendentes-antes-da-etapa-5)). O Gateway não chamará a IA diretamente.
+Este é um trabalho da disciplina de Desenvolvimento Web da UFF. A ideia é simples: você escreve uma dúvida no navegador e pode continuar usando a página enquanto a IA prepara a resposta. Quando ela fica pronta, aparece abaixo da pergunta, na mesma aba.
 
-Formação dos grupos: até quatro alunos por equipe, com no máximo 16 grupos.
+O **Gateway**, nossa API em Spring Boot, recebe a pergunta e a coloca numa fila do RabbitMQ. O **Worker**, que roda separado da API, pega a pergunta, monta as instruções do tutor e consulta o Ollama. A resposta volta por outra fila; o Gateway a entrega ao React pelo WebSocket.
 
-## Etapas
+[Como rodar](#como-rodar) · [O que fizemos em cada etapa](#o-que-fizemos-em-cada-etapa) · [Como testar](#como-testar)
 
-| Etapa | Entrega | Situação |
+## Etapas do projeto
+
+| Etapa | O que entrou no projeto | Situação |
 | --- | --- | --- |
-| 1 | Tela de pergunta e Gateway HTTP: validar o texto e retornar um `correlation_id` | Implementada |
-| 2 | Publicação imediata no RabbitMQ: configurar a exchange, `perguntas.queue` durável, mensagens persistentes e payload JSON com Jackson | Implementada |
-| 3 | Worker sem Starter Web: consumir a fila e preparar o prompt com tema, perfil e temperatura | Implementada sem chamada à IA |
-| 4 | Worker: consultar a IA com Spring AI, tratar falhas com intervalo e retry e publicar a resposta JSON com o identificador original em `respostas.exchange`, roteada à fila durável `respostas.queue` | Implementada |
-| 5 | Retorno via Web STOMP do RabbitMQ: inscrição do React com `@stomp/stompjs` no destino da sessão correta, correlação e exibição da resposta | Pendente |
+| **01** | Formulário para enviar uma pergunta e receber o ID do envio | Concluída |
+| **02** | Fila no RabbitMQ para guardar as perguntas até o processamento | Concluída |
+| **03** | Worker escolhe o perfil do tutor e prepara as instruções | Concluída |
+| **04** | Ollama gera a resposta, que volta por uma segunda fila | Concluída |
+| **05** | A resposta aparece na aba que enviou a pergunta | Concluída para uso local |
 
-Na etapa 5, o destino de cada sessão precisa isolar as respostas no broker. Colocar todos os navegadores como consumidores concorrentes de uma única fila não garante que cada resposta chegue ao navegador que fez a pergunta. O `correlation_id` identifica uma pergunta e será preservado no processamento; o roteamento da sessão será definido nessa etapa.
+## O que fizemos em cada etapa
 
-### Decisões pendentes antes da etapa 5
+1. **Receber a pergunta.** Criamos o formulário em React e a rota na API. O Gateway rejeita perguntas em branco e devolve um identificador (`correlation_id`) para acompanhar cada envio.
+2. **Colocar a pergunta na fila.** Em vez de chamar a IA na hora, o Gateway envia a pergunta para `perguntas.queue`. Ele só confirma o envio ao navegador depois que o RabbitMQ aceita a publicação e confirma que a mensagem teve destino. A fila e as mensagens foram configuradas para sobreviver a um reinício normal do broker.
+3. **Preparar o pedido para a IA.** O Worker lê a pergunta e usa expressões do texto para identificar o assunto e o tipo de ajuda que o aluno quer. “Qual a diferença entre Java e Python?” pede uma comparação; “Me dê ideias para um projeto de física” pede sugestões. O Worker monta as instruções do tutor sem reescrever a pergunta original. Essas regras ajudam a escolher um perfil, mas não entendem toda frase: quando não há uma escolha clara, usamos o perfil padrão.
+4. **Gerar a resposta.** O Worker chama o Ollama pelo Spring AI e usa a temperatura escolhida no passo anterior. Se houver uma falha temporária, ele tenta de novo, com até três tentativas no total. Depois publica em `respostas.queue` a resposta ou um aviso de erro, junto com o ID original.
+5. **Mostrar a resposta na tela.** O Gateway lê a fila de respostas e manda cada resultado para a aba que fez a pergunta, usando STOMP sobre WebSocket. Se a conexão cair, a mesma aba consegue buscar a resposta pela API quando voltar. Dá para fazer mais de um envio sem perder de qual pergunta veio cada resposta.
 
-As etapas 1 a 4 não dependem destes dois pontos, mas ambos precisam ser decididos **antes de começar a etapa 5**, porque mudam como a resposta chega ao usuário certo.
+A temperatura é um ajuste passado ao modelo: usamos valores menores para pedidos que pedem mais precisão e maiores quando faz sentido explorar ideias.
 
-**1. Autenticação com JWT: recomendada, ainda não implementada.** A especificação não lista o JWT entre os requisitos obrigatórios, mas o professor o recomenda fortemente: a chamada à IA tem custo, e cada resposta pertence a um único usuário. Sem autenticação, qualquer pessoa pode enviar perguntas ou tentar ler a resposta de outra. Quando for implementado:
-
-- o Gateway passa a exigir `Authorization: Bearer <token>` em `POST /perguntas`. `SecurityConfig`, `JwtService`, `JwtAuthenticationFilter` e o login do exercício 20 do professor (`backend/Exercicio20-apirestful-com-spring-security`) podem ser reaproveitados;
-- `PerguntaMensagem`, no módulo `comum`, ganha o identificador do usuário extraído do token, e o Worker o devolve junto com a resposta, para que ela seja roteada a esse usuário;
-- o canal de retorno da etapa 5 só entrega respostas ao usuário dono do token.
-
-**2. Caminho de retorno: STOMP (plano atual) ou SSE (alternativa aceita).** A especificação permite os dois:
-
-| | STOMP sobre WebSocket (itens 2.1 a 2.4 da especificação) | SSE pelo Gateway (itens 3.1 a 3.4 da especificação) |
+| Perfil | Exemplo | Temperatura |
 | --- | --- | --- |
-| Quem entrega a resposta ao React | O RabbitMQ, pelo plugin Web STOMP (porta 15674) | O Gateway: um `@RabbitListener` em `respostas.queue` envia pelo `SseEmitter` do usuário |
-| Biblioteca no React | `@stomp/stompjs` (já declarada) | `@microsoft/fetch-event-source` (permite enviar o JWT no header) |
-| Isolamento por usuário | Feito no broker: uma fila ou routing key exclusiva por usuário | Feito no Gateway: mapa `userId → SseEmitter` |
-| JWT | Validado pelo RabbitMQ (plugin OAuth 2) ou por um intermediário; mais trabalhoso | Validado pelo Spring Security, como no exercício 20 |
+| Analítico | Qual a diferença entre Java e Python? | `0.0` |
+| Criativo | Me dê ideias para um projeto de física | `0.8` |
+| Prático | Como configurar um banco de dados? | `0.2` |
+| Didático | O que é um algoritmo? | `0.4` |
+| Padrão | Tenho uma dúvida sobre Python | `0.2` |
 
-O professor descreve o SSE como o caminho que "parece ser mais simples", e ele combina diretamente com o JWT. Se o grupo escolher o SSE, é preciso atualizar a linha da etapa 5 na tabela acima e esta seção. Nesse caso, o React passa a usar `fetch-event-source` no lugar de `@stomp/stompjs`, e o plugin `rabbitmq_web_stomp` deixa de ser necessário.
+A etapa 5 usa o Gateway como ponte. O navegador não se conecta diretamente ao plugin Web STOMP do RabbitMQ, como no fluxo original do enunciado. A sessão é anônima, sem login, e fica em memória por até uma hora. Recarregar a página ou reiniciar o Gateway não restaura o histórico. Para a demonstração local, use uma única instância do Gateway.
 
-## Organização da etapa 1
+## Como rodar
 
-```text
-des-web/
-├── backend/
-│   ├── mvnw, mvnw.cmd e .mvn/  # Maven Wrapper do Trabalho
-│   ├── pom.xml
-│   ├── comum/    # módulo Maven reservado para o que for compartilhado
-│   ├── gateway/  # controller, service, dto e resources
-│   ├── worker/   # apenas o POM já existente; sem execução nesta etapa
-│   └── tests/    # testes centralizados, separados por módulo
-└── frontend/     # components, pages, routes, interfaces e util em src/
-```
+Você precisa de **JDK 25**, **Node.js** com npm (20.19+ na linha 20 ou 22.12+), **Docker** para o RabbitMQ e **Ollama** para gerar respostas. Não precisa instalar MySQL nem Maven separadamente: o repositório já traz o Maven Wrapper.
 
-O Gateway segue a estrutura do exercício 02: o controller recebe a requisição, o DTO define os dados de entrada, o Spring valida e o service gera o identificador. O frontend segue os exercícios 04 e 06: layout, página e formulário separados, `fetch` com `async/await` e proxy do Vite. As dependências de AMQP, Spring AI e STOMP que já estavam declaradas na estrutura foram preservadas; na etapa 1 elas ainda não eram utilizadas.
+### 1. Ligar o RabbitMQ
 
-`POST /perguntas` recebe `{"texto":"O que é escopo?"}`. Na etapa 1, o Gateway devolvia HTTP 200 com `{"correlation_id":"<UUID>"}` ou HTTP 400 para texto ausente, vazio ou em branco, sem publicar nada. **A partir da etapa 2, o sucesso passou a ser HTTP 202 e o RabbitMQ precisa estar rodando** (veja a próxima seção). MySQL não é necessário. Para testar apenas a etapa 2, também não é preciso ligar o Ollama.
+No Windows, abra o [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) e espere ele terminar de iniciar. Não é preciso entrar no Ubuntu pelo WSL para rodar os comandos. No macOS, abra o Docker Desktop ou inicie o Colima, se já o usa.
 
-## Organização da etapa 2
+Na raiz de `des-web`, onde fica `compose.yaml`:
 
-```text
-backend/
-├── comum/    # contrato compartilhado por Gateway e Worker
-│   ├── config/RabbitMQConfig  # exchange, fila, binding e conversor JSON
-│   └── dto/PerguntaMensagem   # payload {"correlation_id", "texto"}
-└── gateway/
-    ├── service/PerguntaService          # publica e espera a confirmação do RabbitMQ
-    └── exception/GlobalExceptionHandler # RabbitMQ indisponível → HTTP 503
-compose.yaml  # RabbitMQ local, igual no Windows e no macOS
-```
-
-A cada `POST /perguntas` válido, o Gateway gera o `correlation_id`, monta um `PerguntaMensagem` e o publica na exchange `perguntas.exchange` (tipo direct) com a routing key `perguntas`, que a entrega à fila `perguntas.queue`. O Gateway não chama a IA.
-
-- **Durabilidade:** exchange e fila são duráveis e a mensagem é publicada como persistente (`delivery_mode` 2), então as perguntas ainda não consumidas sobrevivem a um reinício do RabbitMQ.
-- **Confirmação:** o Gateway exige confirmação positiva e verifica se o RabbitMQ devolveu a mensagem por falta de rota. Retorna HTTP 503 em caso de devolução, rejeição, indisponibilidade ou se não receber a confirmação em até 5 segundos após publicar. Um timeout é inconclusivo: a mensagem pode ter entrado na fila. Reenviar não é uma operação sem duplicatas.
-- **Serialização:** `Jackson2JsonMessageConverter` com o `ObjectMapper` do Spring Boot. A mensagem trafega como `application/json`, por exemplo `{"correlation_id":"<UUID>","texto":"O que é escopo?"}`. O `correlation_id` também vai na propriedade AMQP `correlation_id`.
-- **Módulo comum:** a declaração da fila e o formato da mensagem ficam em `comum`, porque o Worker (etapa 3) precisa declará-los de forma idêntica. O RabbitMQ recusa a mesma fila declarada com argumentos diferentes. O Gateway importa a configuração com `@Import(RabbitMQConfig.class)`.
-- **Status HTTP:** a resposta de sucesso passou de 200 para **202 Accepted**. A pergunta foi aceita para processamento, mas ainda não foi respondida; a resposta da IA chegará de forma assíncrona.
-
-Host, porta, usuário e senha do RabbitMQ vêm de `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME` e `RABBITMQ_PASSWORD`, com padrão `localhost`, `5672`, `guest` e `guest`. Com o `compose.yaml`, não é preciso definir nenhuma delas. Os testes do Gateway simulam o RabbitMQ e não precisam dele ligado. As requisições de exemplo estão em [testes.http](backend/tests/http/testes.http), que pode ser executado no VS Code com a extensão REST Client.
-
-Para conferir a publicação, abra o painel em [localhost:15672](http://localhost:15672) (usuário e senha `guest`), entre em **Queues and Streams → perguntas.queue** e use **Get messages**. Sem ligar o Worker, as perguntas se acumulam na fila. Use a leitura com reenfileiramento se quiser inspecionar uma mensagem sem removê-la.
-
-## Organização da etapa 3
-
-O Worker é outro processo Spring Boot, sem servidor HTTP. Ele importa a mesma configuração Jackson/RabbitMQ do módulo `comum` e usa `PerguntaListener` para consumir `perguntas.queue`. Em seguida, `EnriquecedorDePrompt` analisa termos e expressões (sem diferenciar acentos ou maiúsculas) e escolhe o tema e o perfil separadamente.
-
-| Perfil | Exemplo de pedido | Temperatura preparada |
-| --- | --- | --- |
-| Analítico | Compare dois algoritmos | 0,0 |
-| Criativo | Me dê ideias para um projeto de física | 0,8 |
-| Prático | Como configurar um banco de dados? | 0,2 |
-| Didático | O que é um algoritmo? | 0,4 |
-| Padrão | Escopo? | 0,2 |
-
-O perfil é escolhido por expressões, sinônimos e variações de escrita: «qual a diferença» equivale a um pedido de comparação e «me explica» sinaliza um pedido didático. Expressões específicas têm mais peso que verbos isolados; sem sinais suficientes ou em caso de empate, aplica-se o perfil padrão. Se o tema não ficar claro, o template deixa o assunto aberto. Isso é uma heurística, não uma interpretação semântica do pedido. A instrução do tutor e a pergunta original ficam separadas; o `correlation_id` é preservado. A temperatura preparada é aplicada na chamada ao Ollama pelo Spring AI na etapa 4.
-
-Inicie o Worker seguindo os comandos de [Windows](#4-ligar-o-gateway-o-react-e-o-worker) ou [macOS](#executar-no-macos).
-
-Envie uma pergunta com o RabbitMQ e o Gateway ligados. O Worker registra o ID, tema, perfil e temperatura no terminal, sem registrar a pergunta. Na versão atual, ele também executa a etapa 4. Deixe o Worker desligado se quiser inspecionar `perguntas.queue` na etapa 2.
-
-## Organização da etapa 4
-
-O Worker envia a instrução do tutor como mensagem de sistema e a pergunta original como mensagem de usuário ao Ollama via Spring AI, com a temperatura do perfil. A chamada pode bloquear o Worker, mas não o Gateway. Falhas transitórias (incluindo HTTP 429, falha de conexão e respostas vazias) têm até três tentativas, com pausas de 2 e 4 segundos. Se a IA falhar de forma definitiva, o Worker publica uma resposta com status `ERRO`, em vez de deixar a pergunta sem retorno no broker.
-
-A resposta é JSON persistente com `correlation_id`, `texto` e `status` (`OK` ou `ERRO`), publicada em `respostas.exchange` com chave `respostas`, para a fila durável `respostas.queue`. O Worker espera a confirmação e verifica a devolução por falta de rota antes de confirmar o consumo da pergunta. Se a publicação não for confirmada, ele espera brevemente e manda reenfileirar a pergunta. Corrija a falha no broker ou pare o Worker se o problema persistir. A entrega não é exatamente uma vez: se o broker gravar a resposta e a confirmação se perder, pode haver duas respostas com o mesmo ID.
-
-Para rodar e conferir a etapa 4, siga o [guia de execução](#executar-no-windows) e os [testes manuais](#testes-manuais-das-etapas-1-a-4).
-
-## Organização da etapa 5
-
-ainda a fazer
-
-## Executar os testes
-
-Todos os arquivos de teste ficam em [backend/tests/](backend/tests/):
-
-- `comum/`: configuração RabbitMQ e serialização JSON.
-- `gateway/`: validação HTTP e publicação com o RabbitMQ simulado.
-- `worker/`: classificação, preparação do prompt, chamada simulada à IA e confirmação da publicação.
-- `http/`: requisições manuais; execute [testes.http](backend/tests/http/testes.http) com o Gateway ligado. Para conferir o HTTP 202, ligue também o RabbitMQ.
-
-Com o JDK 25, dentro de `backend/`, rode `.\mvnw.cmd test` no Windows ou `./mvnw test` no macOS/Linux. Os testes automatizados não precisam do RabbitMQ nem do Ollama. Para rodar apenas os testes do Worker e de suas dependências, acrescente `-pl worker -am`.
-
-### Testes manuais das etapas 1 a 4
-
-Use o [testes.http](backend/tests/http/testes.http) com a extensão REST Client ou envie as perguntas pela tela do React. O React é opcional para testar por HTTP, mas é necessário para conferir a tela da etapa 1.
-
-**Etapa 1 — formulário e Gateway.** Na versão atual, ligue RabbitMQ, Gateway e React, mas deixe o Worker parado. Abra a URL do Vite, digite “O que é um algoritmo?” e clique em **Enviar pergunta**. A tela deve mostrar a confirmação e um `correlation_id`. Pelo `testes.http`, o envio válido deve retornar `202 Accepted`; o envio em branco deve retornar `400` sem ID. Na implementação original da etapa 1, ainda não havia RabbitMQ e o sucesso era `200`; no código atual, a etapa 2 mudou esse contrato.
-
-**Etapa 2 — envio e persistência.** Ligue RabbitMQ e Gateway, mas deixe o Worker parado. Envie uma pergunta válida e confira o `202 Accepted` e o `correlation_id` retornado. No painel do RabbitMQ, abra **Queues and Streams → perguntas.queue**. Confira que **Ready** aumentou e, em **Get messages**, escolha o modo de leitura que reenfileira a mensagem (`requeue=true`); o JSON deve conter o mesmo ID e o texto enviado. A requisição em branco deve retornar `400` sem acrescentar mensagem.
-
-Se quiser comprovar a persistência, ainda com o Worker parado, rode `docker compose restart rabbitmq` na raiz, aguarde o ping e confira se a pergunta continua na fila. Se quiser conferir a falha de conexão, pare temporariamente o RabbitMQ com `docker compose stop rabbitmq`, envie uma pergunta e espere `503`. Depois, suba-o novamente com `docker compose up -d`.
-
-**Etapa 3 — consumo e escolha do perfil.** Mantenha RabbitMQ e Gateway ligados. No código atual, inicie também o Ollama com um modelo instalado antes de rodar o Worker, para que a execução da etapa 4 não atrase os testes seguintes. Inicie o Worker em outro terminal e envie os exemplos abaixo. Ele pode consumir as perguntas que ficaram na fila da etapa 2 primeiro; use o `correlation_id` da requisição para achar a linha certa no terminal do Worker.
-
-| Sugestões | Perfil e temperatura no log |
-| --- | --- |
-| Qual a diferença entre Java e Python? | `ANALITICO`, `0.0` |
-| Me dê ideias para um projeto de física | `CRIATIVO`, `0.8` |
-| Como eu consigo configurar o React? | `PRATICO`, `0.2` |
-| O que é um algoritmo? | `DIDATICO`, `0.4` |
-| Tenho uma dúvida sobre Python | `PADRAO`, `0.2` |
-
-Com o Worker ativo, a mensagem pode sair da fila antes de aparecer no painel. O que confirma o teste é a linha `Pergunta preparada` com o mesmo ID, tema, perfil e temperatura. Esse teste verifica a saída da etapa 3. Na versão atual, o Worker também executa a etapa 4: a resposta da IA ou de erro fica em `respostas.queue`, não na interface.
-
-**Etapa 4 — resposta da IA.** Com Ollama, Worker, Gateway e RabbitMQ ativos, envie “O que é um algoritmo?” pela interface ou pelo `testes.http`. Anote o ID devolvido pelo Gateway e espere `Resposta publicada` no terminal do Worker. Em [localhost:15672](http://localhost:15672), entre com `guest` / `guest` e vá em **Queues and Streams → respostas.queue → Get messages**. Escolha **Nack message requeue true** e procure o JSON com o mesmo `correlation_id`. O status esperado é `OK` e o campo `texto` deve conter a resposta. Se houver itens antigos, peça mais de uma mensagem e compare os IDs.
-
-Se o Ollama estiver indisponível ou o modelo selecionado não existir, o envio ainda pode retornar `202`, mas o Worker deve publicar `ERRO` na fila. Já um `503` no envio indica que o Gateway não confirmou a publicação da pergunta. A primeira geração pode demorar para carregar o modelo. A resposta só vai aparecer no React na etapa 5.
-
-## Executar no Windows
-
-Rode os comandos no **PowerShell do Windows**, a partir da raiz do clone de `des-web` (a pasta que contém `compose.yaml`). A ordem é **RabbitMQ → Gateway → React → Ollama → Worker**. Use os três primeiros para testar as etapas 1 e 2. Só ligue o Worker depois de conferir `perguntas.queue`; na versão atual, ele consome as perguntas e já chama a IA. O React é opcional quando você só quer testar por HTTP. Não é preciso instalar MySQL nem Maven separadamente; o projeto já tem Maven Wrapper.
-
-### 1. Instalar o que estiver faltando
-
-- **Java:** instale o [Temurin JDK 25](https://adoptium.net/installation/). Use o **JDK**, não só o JRE. Confira com `java -version` e `javac -version`.
-- **React:** instale [Node.js e npm](https://nodejs.org/en/download) se for usar a interface: Node 20.19+ na linha 20.x ou 22.12+. Confira com `node -v` e `npm.cmd -v`.
-- **RabbitMQ:** instale o [Docker Desktop para Windows](https://docs.docker.com/desktop/setup/install/windows-install/) se ainda não tiver. Pelo WinGet, a alternativa é `winget install --id Docker.DockerDesktop --exact`. Use o backend WSL 2 e siga as instruções do instalador se ele pedir para habilitar o recurso ou reiniciar. Ter o Ubuntu no WSL não significa que o Docker esteja instalado. Não é preciso abrir o Ubuntu nem instalar Docker dentro dele para usar este projeto pelo PowerShell.
-
-### 2. Ligar o RabbitMQ
-
-Abra o **Docker Desktop** pelo menu Iniciar e espere o motor iniciar. Abra um PowerShell novo; se usar o terminal integrado e ele não reconhecer os comandos após a instalação, feche e reabra o VS Code inteiro. Na raiz de `des-web`:
-
-```powershell
-docker compose version
-docker info --format '{{.ServerVersion}}'
+```shell
 docker compose up -d
 docker compose ps
 docker compose exec rabbitmq rabbitmq-diagnostics -q ping
 ```
 
-Rode `up -d` depois que `docker info` mostrar a versão do servidor. No primeiro uso o Compose baixa a imagem. A saída de `ps` deve mostrar `tutoria-rabbitmq` como `Up`; se o ping ainda falhar, espere alguns segundos e repita. O painel fica em [localhost:15672](http://localhost:15672), com usuário e senha `guest`, e a aplicação se conecta ao RabbitMQ na porta `5672`.
+O container deve aparecer como `Up` e o último comando deve indicar `Ping succeeded`. O painel do RabbitMQ fica em [localhost:15672](http://localhost:15672), com usuário e senha `guest`. Se só quiser testar o formulário e a fila de perguntas, deixe o Worker desligado por enquanto.
 
-Se `docker` ainda não for reconhecido, mas o Docker Desktop já estiver instalado em `C:\Program Files\Docker\Docker`, rode no **mesmo terminal**:
+### 2. Escolher o modelo da IA
 
-```powershell
-$env:Path = "C:\Program Files\Docker\Docker\resources\bin;$env:Path"
-docker compose version
-```
+Instale o [Ollama](https://ollama.com/download) e abra o aplicativo. Em um novo terminal, baixe **só um** dos modelos:
 
-Esse ajuste vale apenas para a sessão atual. Se a instalação estiver em outro lugar, aponte para a pasta que contém `docker.exe`. Se `compose version` funcionar, mas `docker info` falhar com `npipe`, `docker_engine` ou `daemon`, o caminho está correto: confira se o motor do Docker Desktop terminou de iniciar e tente `docker info` de novo.
-
-### 3. Instalar o Ollama e escolher um modelo
-
-Para rodar o Worker da etapa 4, instale o [Ollama para Windows](https://docs.ollama.com/windows), abra-o pelo menu Iniciar e abra um novo PowerShell. Baixe **apenas um** dos modelos:
-
-| Opção | Comando para baixar | Download | Configuração sugerida para o projeto completo |
+| Opção | Comando | Download | Memória sugerida |
 | --- | --- | --- | --- |
-| Leve — para notebook de entrada e testes do fluxo | `ollama pull llama3.2:1b` | 1,3 GB | CPU de 4 núcleos, 8 GB de RAM com outros apps fechados; 16 GB dá mais folga. Reserve ~2–3 GB de RAM livre para o Ollama. |
-| Intermediária — padrão do projeto | `ollama pull llama3.2:3b` | 2,0 GB | CPU de 4 núcleos ou mais, 16 GB de RAM. Reserve ~4–6 GB de RAM livre. |
-| Forte — para perguntas mais complexas | `ollama pull llama3.1:8b` | 4,9 GB | CPU com 6 núcleos e 24–32 GB de RAM como ponto de partida se rodar sem GPU; reserve ~8–12 GB de RAM livre. Uma GPU compatível com 8 GB de VRAM ou mais pode acelerar contextos curtos; mantenha folga na RAM do sistema para o restante da aplicação. |
+| Leve | `ollama pull llama3.2:1b` | 1,3 GB | 8 GB de RAM com outros programas fechados; 16 GB dá mais folga |
+| Intermediária | `ollama pull llama3.2:3b` | 2,0 GB | 16 GB de RAM, com cerca de 4–6 GB livres para o Ollama |
+| Forte | `ollama pull llama3.1:8b` | 4,9 GB | 24–32 GB de RAM como ponto de partida sem GPU; uma GPU compatível com 8 GB de VRAM pode ajudar |
 
-Os valores de RAM/VRAM são **estimativas de partida**, não requisitos oficiais nem garantia de velocidade. Considere o que sobrou **depois de ligar Windows, Docker, Gateway e Worker**. O tamanho do download não inclui o instalador nem o uso de memória em execução. Contextos maiores e outros aplicativos aumentam o consumo. Consulte as fichas de [Llama 3.2](https://ollama.com/library/llama3.2/tags), [Llama 3.1 8B](https://ollama.com/library/llama3.1:8b) e o [guia de tamanho de contexto](https://docs.ollama.com/context-length).
+Esses valores de memória são estimativas para o projeto rodando junto com o Docker. O tamanho do download não é a quantidade de RAM que o modelo vai usar. Se não souber qual escolher, comece pelo **1B**. Confira se o download terminou com `ollama list`. Se o comando não conectar, abra o aplicativo; só use `ollama serve` se não houver um servidor rodando.
 
-Depois de baixar:
+Tamanhos dos modelos: [Llama 3.2](https://ollama.com/library/llama3.2/tags) e [Llama 3.1 8B](https://ollama.com/library/llama3.1:8b).
 
-```powershell
-ollama list
-Invoke-RestMethod 'http://localhost:11434/api/tags'
-```
+### 3. Abrir os terminais da aplicação
 
-Confira se o modelo aparece na lista. Se a API não responder, abra o aplicativo. Use `ollama serve` em outro terminal apenas se já não houver um servidor na porta `11434`. Se o CLI não for reconhecido depois da instalação, reabra também o VS Code, caso esteja usando o terminal integrado. Para mover o armazenamento dos modelos para outro disco, veja `OLLAMA_MODELS` no [guia do Ollama para Windows](https://docs.ollama.com/windows#changing-model-location).
+Use um terminal para cada processo e mantenha os três abertos. Se já houver um Gateway ou Worker rodando, pare a versão antiga com `Ctrl+C` antes de gerar o novo JAR.
 
-### 4. Ligar o Gateway, o React e o Worker
+#### Windows (PowerShell)
 
-Nos terminais do Gateway e do Worker, rode `java -version`. Se aparecer Java 8 ou outra versão que não seja 25, ou se `JAVA_HOME` apontar para outro JDK, ajuste as variáveis abaixo. O caminho é um exemplo da instalação do Gabriel: em outro computador, use o caminho do seu JDK 25 (a pasta que contém `bin\javac.exe`). As variáveis são alteradas apenas neste terminal:
+Nos dois terminais Java, selecione o JDK 25. O caminho abaixo é um exemplo local: se o seu JDK estiver em outra pasta, coloque em `JAVA_HOME` o caminho da pasta que contém `bin\javac.exe`. Caso ainda não tenha o JDK, instale o [Temurin 25](https://adoptium.net/installation/).
 
 ```powershell
 $env:JAVA_HOME = 'C:\Users\Gabriel Panza\AppData\Local\Programs\Java\Temurin-25\PFiles64\Eclipse Adoptium\jdk-25.0.4.7-hotspot'
@@ -211,20 +82,15 @@ $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 java -version
 ```
 
-Confirme que `java -version` mostra **25** antes de continuar.
-
-
-**Terminal 1 — Gateway** (porta 8081, separada das APIs dos exercícios):
+**Terminal 1 — Gateway.** Cole a linha inteira em um prompt vazio. Se o clone estiver em outro lugar, ajuste o caminho em `Set-Location`.
 
 ```powershell
-cd .\backend
-.\mvnw.cmd -pl gateway -am package
-java -jar .\gateway\target\gateway-1.0.0-SNAPSHOT.jar
+Set-Location -LiteralPath 'D:\Documents\GitHub\des-web\backend' -ErrorAction Stop; & './mvnw.cmd' -pl gateway -am package; if ($LASTEXITCODE -eq 0) { & "$env:JAVA_HOME/bin/java.exe" -jar './gateway/target/gateway-1.0.0-SNAPSHOT.jar' }
 ```
 
-`-pl gateway -am` seleciona o Gateway e seu módulo comum, sem compilar o Worker. Execute a linha `java -jar` somente após o Maven terminar com sucesso.
+Espere aparecer `Started GatewayApplication`. A API fica na porta `8081`.
 
-**Terminal 2 — React:**
+**Terminal 2 — React.** Abra o terminal na raiz do clone. O `npm.cmd ci` é necessário na primeira vez e quando as dependências mudarem.
 
 ```powershell
 cd .\frontend
@@ -232,63 +98,34 @@ npm.cmd ci
 npm.cmd run dev
 ```
 
-Abra o endereço que o Vite imprimir, normalmente [localhost:5173](http://localhost:5173). Escreva uma pergunta e clique em **Enviar pergunta**. A confirmação deve mostrar o identificador. Para ver a mensagem na fila, faça o teste manual da etapa 2 com o Worker desligado. O Vite encaminha `/api/perguntas` para `http://localhost:8081/perguntas`, como no proxy usado em sala. Use `Ctrl+C` para parar cada servidor. O RabbitMQ continua rodando em segundo plano depois que você fecha o terminal. Para pará-lo sem excluir o volume de dados, rode `docker compose stop` na raiz do clone. Evite `docker compose down -v` se quiser preservar as mensagens. Para voltar, abra o Docker Desktop e rode `docker compose up -d` novamente.
-
-**Terminal 3 — Worker:** na raiz do clone, ajuste o JDK 25 neste terminal também. Ligue o Ollama antes e escolha **o mesmo nome que você baixou**:
+**Terminal 3 — Worker.** Selecione o JDK 25 neste terminal também. Use o nome do modelo que aparece em `ollama list`; o exemplo usa o 1B.
 
 ```powershell
-cd .\backend
-$env:OLLAMA_MODEL = 'llama3.2:latest' # 'llama3.2:1b' ou 'llama3.2:3b' ou 'llama3.1:8b'
-.\mvnw.cmd -pl worker -am package
-java -jar .\worker\target\worker-1.0.0-SNAPSHOT.jar
+Set-Location -LiteralPath 'D:\Documents\GitHub\des-web\backend' -ErrorAction Stop; $env:OLLAMA_MODEL = 'llama3.2:1b'; & './mvnw.cmd' -pl worker -am package; if ($LASTEXITCODE -eq 0) { & "$env:JAVA_HOME/bin/java.exe" -jar './worker/target/worker-1.0.0-SNAPSHOT.jar' }
 ```
 
-Rode o JAR após `BUILD SUCCESS` e espere `Started WorkerApplication`. Sem `OLLAMA_MODEL`, o Worker usa `llama3.2` (3B). Para trocar de modelo, pare o Worker, ajuste a variável e rode o JAR novamente; não precisa recompilar só por isso. Para um serviço em outra máquina, configure `OLLAMA_BASE_URL`; para ajustar o tempo de leitura, use `OLLAMA_READ_TIMEOUT` (padrão `90s`). Depois, siga os [testes manuais](#testes-manuais-das-etapas-1-a-4).
+Espere aparecer `Started WorkerApplication`. Os comandos do Gateway e do Worker só abrem o JAR se o build passar.
 
-### Problemas comuns
+#### macOS
 
-| Sintoma | O que conferir |
-| --- | --- |
-| `docker` não é reconhecido | Confira a instalação e reabra o terminal, ou ajuste o `PATH` da sessão como descrito acima |
-| `npipe`, `docker_engine` ou `Cannot connect to the Docker daemon` | Abra o Docker Desktop e espere `docker info` mostrar a versão do servidor |
-| Erro do `docker compose` citando `configs` ou `content` | Docker Desktop desatualizado: atualize-o, pois o `compose.yaml` usa `configs` com conteúdo inline |
-| `port is already allocated` na porta 5672 ou 15672 | Outro RabbitMQ já está rodando (instalação nativa ou outro container); pare-o ou use apenas ele |
-| A tela mostra "Não foi possível confirmar o envio" (HTTP 503) | Confira se o RabbitMQ está rodando e se a fila está vinculada à exchange. Em caso de timeout, confira a fila antes de reenviar |
-| A tela mostra "Verifique se o Gateway está rodando" | O Terminal 1 foi fechado ou o Maven falhou; confira se apareceu `Started GatewayApplication` |
-| `release 25`, `JAVA_HOME` inválido ou `UnsupportedClassVersionError` | Confira `java -version` no mesmo terminal antes de rodar o Maven ou o JAR |
-| `npm.ps1 cannot be loaded` | Use `npm.cmd`, como nos exemplos |
-| `ERRO` em `respostas.queue` ou `model not found` | Confira `ollama list` e `OLLAMA_MODEL` no terminal do Worker |
-| Erro de memória ou geração muito lenta | Feche aplicativos pesados, use o modelo leve e reinicie o Worker com a variável correta |
-
-## Executar no macOS
-
-Pré-requisitos iguais aos do Windows: JDK 25, Node.js e npm. Com o [Homebrew](https://brew.sh), instale e coloque no PATH (as fórmulas abaixo não substituem outro Java ou Node que já esteja configurado):
+Se precisar instalar Java e Node, use o [Homebrew](https://brew.sh/) com `brew install openjdk@25 node@24`. Nos terminais Java, ajuste o ambiente e confira a versão:
 
 ```bash
-brew install openjdk@25 node@24
-echo 'export JAVA_HOME="/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home"' >> ~/.zprofile
-echo 'export PATH="$JAVA_HOME/bin:/opt/homebrew/opt/node@24/bin:$PATH"' >> ~/.zprofile
+export JAVA_HOME="$(brew --prefix openjdk@25)/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$(brew --prefix node@24)/bin:$PATH"
+java -version
 ```
 
-Feche e reabra o terminal e confirme que `java -version` mostra **25**. Os comandos partem da raiz de `des-web`.
+Abra cada terminal na raiz do clone:
 
-**RabbitMQ.** Com Docker Desktop instalado, ou com o Colima (`brew install colima docker docker-compose` e depois `colima start`), rode na raiz de `des-web`:
-
-```bash
-docker compose up -d
-```
-
-O painel, os comandos para parar e iniciar e os problemas comuns são os mesmos da seção do Windows. Se o Colima foi usado, rode `colima start` de novo depois de reiniciar o Mac.
-
-**Terminal 1 — Gateway** (porta 8081):
+**Gateway:**
 
 ```bash
 cd backend
-./mvnw -pl gateway -am package
-java -jar gateway/target/gateway-1.0.0-SNAPSHOT.jar
+./mvnw -pl gateway -am package && java -jar gateway/target/gateway-1.0.0-SNAPSHOT.jar
 ```
 
-**Terminal 2 — React:**
+**React:**
 
 ```bash
 cd frontend
@@ -296,15 +133,52 @@ npm ci
 npm run dev
 ```
 
-**Terminal 3 — Worker:** instale o [Ollama para macOS](https://ollama.com/download/mac), abra o aplicativo e faça `ollama pull` com uma das [três opções](#3-instalar-o-ollama-e-escolher-um-modelo). Em outro terminal, na raiz do clone:
+**Worker:**
 
 ```bash
 cd backend
-export OLLAMA_MODEL=llama3.2:1b # ou llama3.2:3b ou llama3.1:8b
-./mvnw -pl worker -am package
-java -jar worker/target/worker-1.0.0-SNAPSHOT.jar
+export OLLAMA_MODEL=llama3.2:1b
+./mvnw -pl worker -am package && java -jar worker/target/worker-1.0.0-SNAPSHOT.jar
 ```
 
-Quando o Worker estiver ativo, siga os [mesmos testes manuais](#testes-manuais-das-etapas-1-a-4).
+Troque o valor de `OLLAMA_MODEL` se baixou outro modelo. Se o Maven Wrapper não tiver permissão para executar, rode `chmod +x backend/mvnw` na raiz do clone.
 
-O `mvnw` é versionado com permissão de execução e fim de linha LF (veja `.gitattributes`). Se aparecer `permission denied`, rode `chmod +x backend/mvnw`.
+### 4. Abrir a aplicação
+
+Em [localhost:5173](http://localhost:5173), espere aparecer **Conectado para receber respostas**. Digite “O que é um algoritmo?” e envie. Primeiro aparece o ID do envio; a resposta vem depois, no cartão da própria pergunta. A primeira geração pode demorar porque o Ollama ainda precisa carregar o modelo.
+
+Para parar os processos, use `Ctrl+C` nos respectivos terminais. Na raiz do clone, `docker compose stop` para o RabbitMQ sem excluir seu volume.
+
+## Como testar
+
+- **Etapa 1 — formulário:** ligue RabbitMQ, Gateway e React, mas deixe o Worker desligado. Um envio válido mostra o ID; no HTTP, retorna `202`. Uma pergunta em branco retorna `400`. A versão original da etapa 1 não usava RabbitMQ e retornava `200`; esses testes são para a versão atual.
+- **Etapa 2 — fila:** com o Worker ainda desligado, abra o painel e vá em **Queues and Streams → perguntas.queue → Get messages**. Selecione **Nack message requeue true** para ler sem retirar a mensagem. Confira se o texto e o ID são os mesmos do envio.
+- **Etapa 3 — perfil:** ligue Ollama e Worker. Envie “O que é um algoritmo?” e procure `Pergunta preparada` no terminal do Worker. A linha deve mostrar o mesmo ID, perfil `DIDATICO` e temperatura `0.4`.
+- **Etapa 4 — geração:** procure `Resposta publicada` no terminal do Worker, com o mesmo ID e status `OK`. Se quiser ler o JSON cru em `respostas.queue`, reinicie **só o Gateway** com `--spring.rabbitmq.listener.simple.auto-startup=false` depois do nome do JAR e envie uma nova pergunta. Assim, o Gateway não consome a fila de respostas antes de você abrir o painel. Retire o argumento para voltar à etapa 5.
+- **Etapa 5 — tela:** abra duas abas e envie uma pergunta diferente em cada uma. Cada aba deve mostrar apenas as próprias respostas. Para testar a recuperação, desconecte uma aba após enviar e reconecte sem recarregar a página.
+
+Se preferir testar sem a interface, abra [testes.http](backend/tests/http/testes.http) no VS Code com a extensão REST Client. Rode na ordem: **criar sessão → enviar pergunta → consultar resposta**. A consulta retorna `202` enquanto a resposta não está pronta e `200` quando ela chega.
+
+Para rodar os testes automatizados, execute `.\mvnw.cmd test` no Windows ou `./mvnw test` no macOS, dentro de `backend/`. Esses testes não precisam do RabbitMQ nem do Ollama.
+
+## Se algo der errado
+
+| Sintoma | O que conferir |
+| --- | --- |
+| O PowerShell não encontra `docker` | Reabra o terminal ou ajuste o PATH com `$env:Path = "C:\Program Files\Docker\Docker\resources\bin;$env:Path"`, se o Docker estiver instalado nesse caminho. |
+| O Docker menciona `docker_engine` ou `daemon` | O comando foi encontrado, mas não conseguiu falar com o motor. Abra o Docker Desktop e confira `docker info`. |
+| `mvnw` não é reconhecido ou o Java procura `.jarcd` | Cole a linha inteira em um prompt vazio. O arquivo é `mvnw.cmd`, sem barra antes de `.cmd`. |
+| Erro `release 25` ou `UnsupportedClassVersionError` | Confira se o terminal do serviço está usando o JDK 25. |
+| A tela não conecta ou a porta `5173` está ocupada | Confira `Started GatewayApplication` e se já existe um Vite rodando. Use `localhost:5173` ou `127.0.0.1:5173`. |
+| O envio retorna `503` | Confira se o RabbitMQ está ligado. Se a confirmação demorou demais, a pergunta pode já estar na fila; confira antes de reenviar. |
+| Aparece **Erro no processamento** ou `model not found` | Confira se o Ollama está aberto, se o nome em `OLLAMA_MODEL` bate com o de `ollama list` e se há memória livre. |
+
+## Onde está o código
+
+- [`frontend/`](frontend/): formulário, conexão com a API e exibição das respostas.
+- [`backend/gateway/`](backend/gateway/): recebe pedidos, publica perguntas e entrega respostas.
+- [`backend/worker/`](backend/worker/): escolhe o perfil, chama a IA e publica a resposta.
+- [`backend/comum/`](backend/comum/): formato das mensagens e configuração das filas.
+- [`backend/tests/`](backend/tests/): testes automatizados e requisições manuais.
+
+Para entender por que o mesmo ID passa pelo projeto inteiro, veja [Enterprise Integration Patterns — Correlation Identifier](https://www.enterpriseintegrationpatterns.com/patterns/messaging/CorrelationIdentifier.html), de Gregor Hohpe e Bobby Woolf.
