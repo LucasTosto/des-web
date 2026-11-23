@@ -1,3 +1,4 @@
+
 package br.uff.tutoria.gateway.service;
 
 import java.util.UUID;
@@ -9,11 +10,11 @@ import br.uff.tutoria.comum.config.RabbitMQConfig;
 import br.uff.tutoria.comum.dto.PerguntaMensagem;
 import br.uff.tutoria.gateway.dto.PerguntaDto;
 import br.uff.tutoria.gateway.dto.PerguntaRecebidaDto;
+
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -21,41 +22,88 @@ public class PerguntaService {
 
     private static final long TEMPO_CONFIRMACAO = 5;
 
-    @Autowired
-    private RabbitTemplate rabbitTemplate;
+    private final RabbitTemplate rabbitTemplate;
+    private final CorrelationService correlationService;
 
-    public PerguntaRecebidaDto receber(PerguntaDto pergunta) {
+    public PerguntaService(
+            RabbitTemplate rabbitTemplate,
+            CorrelationService correlationService) {
+
+        this.rabbitTemplate = rabbitTemplate;
+        this.correlationService = correlationService;
+    }
+
+    public PerguntaRecebidaDto receber(
+            PerguntaDto pergunta,
+            String clientId) {
+
         String correlationId = UUID.randomUUID().toString();
-        PerguntaMensagem mensagem = new PerguntaMensagem(correlationId, pergunta.texto());
-        CorrelationData publicacao = new CorrelationData(correlationId);
 
-        rabbitTemplate.convertAndSend(
-            RabbitMQConfig.PERGUNTAS_EXCHANGE,
-            RabbitMQConfig.PERGUNTAS_ROUTING_KEY,
-            mensagem,
-            message -> {
-                message.getMessageProperties().setDeliveryMode(MessageDeliveryMode.PERSISTENT);
-                message.getMessageProperties().setCorrelationId(correlationId);
-                return message;
-            },
-            publicacao);
+        PerguntaMensagem mensagem =
+                new PerguntaMensagem(correlationId, pergunta.texto());
 
-        confirmarPublicacao(publicacao);
-        return new PerguntaRecebidaDto(correlationId);
+        CorrelationData publicacao =
+                new CorrelationData(correlationId);
+
+        // Associa a pergunta ao cliente antes de publicá-la.
+        correlationService.associar(correlationId, clientId);
+
+        try {
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.PERGUNTAS_EXCHANGE,
+                    RabbitMQConfig.PERGUNTAS_ROUTING_KEY,
+                    mensagem,
+                    message -> {
+                        message.getMessageProperties()
+                                .setDeliveryMode(MessageDeliveryMode.PERSISTENT);
+
+                        message.getMessageProperties()
+                                .setCorrelationId(correlationId);
+
+                        return message;
+                    },
+                    publicacao
+            );
+
+            confirmarPublicacao(publicacao);
+
+            return new PerguntaRecebidaDto(correlationId);
+
+        } catch (RuntimeException ex) {
+
+            // Remove a associação se a publicação falhar.
+            correlationService.remover(correlationId);
+
+            throw ex;
+        }
     }
 
     private void confirmarPublicacao(CorrelationData publicacao) {
         try {
-            var confirmacao = publicacao.getFuture().get(TEMPO_CONFIRMACAO, TimeUnit.SECONDS);
-            // O Spring AMQP disponibiliza a devolução antes de completar a confirmação.
+            var confirmacao = publicacao.getFuture().get(
+                    TEMPO_CONFIRMACAO,
+                    TimeUnit.SECONDS
+            );
+
+            // O Spring AMQP disponibiliza a devolução antes
+            // de completar a confirmação.
             if (publicacao.getReturned() != null || !confirmacao.isAck()) {
-                throw new AmqpException("Publicação rejeitada ou sem fila associada.");
+                throw new AmqpException(
+                        "Publicação rejeitada ou sem fila associada."
+                );
             }
+
         } catch (TimeoutException | ExecutionException ex) {
-            throw new AmqpException("Não foi possível confirmar a publicação.", ex);
+            throw new AmqpException(
+                    "Não foi possível confirmar a publicação.", ex
+            );
+
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            throw new AmqpException("Espera pela confirmação interrompida.", ex);
+
+            throw new AmqpException(
+                    "Espera pela confirmação interrompida.", ex
+            );
         }
     }
 }

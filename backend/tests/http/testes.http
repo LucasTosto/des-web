@@ -1,14 +1,25 @@
-### Enviar uma pergunta para perguntas.queue (HTTP 202; 503 se o RabbitMQ estiver desligado)
+### Criar uma sessão temporária (rode primeiro no REST Client)
+# @name sessao
+POST http://localhost:8081/sessoes
+
+### Enviar uma pergunta (202; 503 se a publicação não for confirmada)
+# @name pergunta
 POST http://localhost:8081/perguntas
 Content-Type: application/json
+X-Client-Id: {{sessao.response.body.$.clientId}}
 
 {
-  "texto": "O que é escopo em programação?"
+  "texto": "O que é um algoritmo?"
 }
 
-### Rejeitar uma pergunta em branco (HTTP 400, nada é publicado)
+### Consultar a resposta da pergunta anterior (202 pendente; 200 pronta)
+GET http://localhost:8081/perguntas/{{pergunta.response.body.$.correlation_id}}/resposta
+X-Client-Id: {{sessao.response.body.$.clientId}}
+
+### Rejeitar uma pergunta em branco (400)
 POST http://localhost:8081/perguntas
 Content-Type: application/json
+X-Client-Id: {{sessao.response.body.$.clientId}}
 
 {
   "texto": "   "
