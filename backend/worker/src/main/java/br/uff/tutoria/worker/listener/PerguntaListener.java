@@ -9,6 +9,8 @@ import br.uff.tutoria.worker.prompt.PromptTutor;
 import br.uff.tutoria.worker.publisher.RespostaPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.AmqpException;
+import org.springframework.amqp.ImmediateRequeueAmqpException;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 
@@ -46,7 +48,19 @@ public class PerguntaListener {
                     "Não foi possível gerar a resposta agora. Tente novamente em instantes.");
         }
 
-        publisher.publicar(resposta);
+        try {
+            publisher.publicar(resposta);
+        } catch (AmqpException e) {
+            LOG.warn("Resposta não confirmada para correlation_id={}; a pergunta será reenfileirada.",
+                    resposta.correlationId());
+            // Evita um ciclo de reentrega imediata enquanto a publicação estiver indisponível.
+            try {
+                Thread.sleep(2_000);
+            } catch (InterruptedException interrompida) {
+                Thread.currentThread().interrupt();
+            }
+            throw new ImmediateRequeueAmqpException("Publicação da resposta não confirmada.", e);
+        }
         LOG.info("Resposta publicada: correlation_id={}, status={}",
                 resposta.correlationId(), resposta.status());
     }

@@ -10,9 +10,11 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.retry.TransientAiException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.ResourceAccessException;
 
 @Service
 public class TutorIA {
@@ -32,7 +34,9 @@ public class TutorIA {
         this.retryTemplate = RetryTemplate.builder()
                 .maxAttempts(maxTentativas)
                 .exponentialBackoff(intervaloInicial.toMillis(), 2.0, 10_000)
-                .retryOn(RuntimeException.class)
+                .retryOn(TransientAiException.class)
+                .retryOn(ResourceAccessException.class)
+                .retryOn(RespostaVaziaException.class)
                 .build();
     }
 
@@ -54,10 +58,19 @@ public class TutorIA {
         Prompt prompt = new Prompt(
                 List.of(new SystemMessage(instrucao), new UserMessage(pergunta)),
                 ChatOptions.builder().temperature(temperatura).build());
-        String texto = chatModel.call(prompt).getResult().getOutput().getText();
+        var resposta = chatModel.call(prompt);
+        var resultado = resposta == null ? null : resposta.getResult();
+        String texto = resultado == null || resultado.getOutput() == null
+                ? null : resultado.getOutput().getText();
         if (texto == null || texto.isBlank()) {
-            throw new IllegalStateException("Resposta vazia da IA");
+            throw new RespostaVaziaException();
         }
         return texto;
+    }
+
+    private static class RespostaVaziaException extends RuntimeException {
+        RespostaVaziaException() {
+            super("Resposta vazia da IA");
+        }
     }
 }

@@ -9,6 +9,7 @@ import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -39,7 +40,8 @@ public class RabbitMQConfig {
     }
 
     @Bean
-    public Binding perguntasBinding(Queue perguntasQueue, DirectExchange perguntasExchange) {
+    public Binding perguntasBinding(@Qualifier("perguntasQueue") Queue perguntasQueue,
+                                    @Qualifier("perguntasExchange") DirectExchange perguntasExchange) {
         return BindingBuilder.bind(perguntasQueue).to(perguntasExchange).with(PERGUNTAS_ROUTING_KEY);
     }
 
@@ -67,7 +69,8 @@ public class RabbitMQConfig {
     }
 
     @Bean
-    public Binding respostasBinding(Queue respostasQueue, DirectExchange respostasExchange) {
+    public Binding respostasBinding(@Qualifier("respostasQueue") Queue respostasQueue,
+                                    @Qualifier("respostasExchange") DirectExchange respostasExchange) {
         return BindingBuilder.bind(respostasQueue).to(respostasExchange).with(RESPOSTAS_ROUTING_KEY);
     }
 }
