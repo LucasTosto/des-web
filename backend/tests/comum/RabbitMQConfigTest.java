@@ -2,6 +2,7 @@ package br.uff.tutoria.comum.config;
 
 import java.nio.charset.StandardCharsets;
 
+import br.uff.tutoria.comum.config.RabbitMQConfig;
 import br.uff.tutoria.comum.dto.PerguntaMensagem;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
