@@ -1,10 +1,11 @@
 import type { Pergunta } from "../interfaces/Pergunta";
 import type { PerguntaRecebida } from "../interfaces/PerguntaRecebida";
 
-const enviarPergunta = async (pergunta: Pergunta): Promise<PerguntaRecebida> => {
+const enviarPergunta = async (pergunta: Pergunta, clientId: string): Promise<PerguntaRecebida> => {
   const response = await fetch("/api/perguntas", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json",
+                "X-Client-Id": clientId },
     body: JSON.stringify(pergunta),
   });
 
