@@ -34,6 +34,9 @@ public class EnriquecedorDePrompt {
         String texto = normalizar(mensagem.texto());
         PerfilTutoria perfil = identificarPerfil(texto);
         Tema tema = identificarTema(texto);
+        for (int i = mensagem.historico().size() - 1; tema == Tema.ABERTO && i >= 0; i--) {
+            tema = identificarTema(normalizar(mensagem.historico().get(i).pergunta()));
+        }
 
         String orientacaoTema = tema == Tema.ABERTO
             ? "Identifique o assunto pela pergunta, sem assumir uma área se ela for ambígua."
@@ -42,6 +45,7 @@ public class EnriquecedorDePrompt {
         String instrucao = """
             Você é um tutor acadêmico. Responda em português do Brasil, a menos que o aluno peça outro idioma.
             Adapte o nível ao aluno, sinalize incertezas e não invente fontes.
+            Em perguntas de continuação, use a conversa anterior como contexto e corrija eventuais erros.
             %s
             %s
             """.formatted(orientacaoTema, perfil.instrucao).strip();

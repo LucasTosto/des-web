@@ -1,5 +1,7 @@
 package br.uff.tutoria.worker.listener;
 
+import java.util.List;
+
 import br.uff.tutoria.comum.dto.PerguntaMensagem;
 import br.uff.tutoria.comum.dto.RespostaMensagem;
 import br.uff.tutoria.worker.ia.TutorIA;
@@ -23,14 +25,14 @@ class PerguntaListenerTest {
 
     @Test
     void devePublicarOResultadoComOMesmoIdDaPergunta() {
-        when(tutor.responder(anyString(), eq(pergunta.texto()), eq(0.4))).thenReturn("Resposta");
+        when(tutor.responder(anyString(), eq(pergunta.texto()), eq(0.4), eq(List.of()))).thenReturn("Resposta");
         listener.receber(pergunta);
         verify(publisher).publicar(RespostaMensagem.ok("id-original", "Resposta"));
     }
 
     @Test
     void devePublicarUmaRespostaDeErroQuandoATutoriaFalha() {
-        when(tutor.responder(anyString(), eq(pergunta.texto()), eq(0.4)))
+        when(tutor.responder(anyString(), eq(pergunta.texto()), eq(0.4), eq(List.of())))
             .thenThrow(new TransientAiException("Indisponível"));
         listener.receber(pergunta);
         verify(publisher).publicar(RespostaMensagem.erro("id-original",

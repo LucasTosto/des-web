@@ -39,14 +39,16 @@ public class PerguntaService {
 
         String correlationId = UUID.randomUUID().toString();
 
-        PerguntaMensagem mensagem =
-                new PerguntaMensagem(correlationId, pergunta.texto());
+        String respostaAnteriorId = pergunta.respostaAnteriorId() == null
+                ? null : pergunta.respostaAnteriorId().toString();
+        var historico = correlationService.montarHistorico(respostaAnteriorId, clientId);
+        PerguntaMensagem mensagem = new PerguntaMensagem(correlationId, pergunta.texto(), historico);
 
         CorrelationData publicacao =
                 new CorrelationData(correlationId);
 
         // Associa a pergunta ao cliente antes de publicá-la.
-        correlationService.associar(correlationId, clientId);
+        correlationService.associar(correlationId, clientId, pergunta.texto(), respostaAnteriorId);
 
         try {
             rabbitTemplate.convertAndSend(

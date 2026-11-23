@@ -39,7 +39,7 @@ public class PerguntaListener {
         RespostaMensagem resposta;
         try {
             String texto = tutorIA.responder(
-                    prompt.instrucaoSistema(), prompt.pergunta(), prompt.temperatura());
+                    prompt.instrucaoSistema(), prompt.pergunta(), prompt.temperatura(), mensagem.historico());
             resposta = RespostaMensagem.ok(prompt.correlationId(), texto);
         } catch (RuntimeException e) {
             // Tentativas esgotadas: o aluno recebe um aviso em vez de esperar para sempre.

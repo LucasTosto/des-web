@@ -159,6 +159,32 @@ class PerguntaControllerTest {
             .andExpect(jsonPath("$.texto").value("Resposta"));
     }
 
+    @Test
+    void devePublicarSomenteOHistoricoDaRespostaEscolhida() throws Exception {
+        String primeira = receberPergunta().toString();
+        sessoes.registrarResposta(RespostaMensagem.ok(primeira, "Um exemplo é uma receita."));
+        String independente = receberPergunta().toString();
+        sessoes.registrarResposta(RespostaMensagem.ok(independente, "Resposta de outro assunto"));
+
+        String corpo = objectMapper.writeValueAsString(java.util.Map.of(
+                "texto", "Pode dar outro exemplo?", "respostaAnteriorId", primeira));
+        mockMvc.perform(post("/perguntas").header("X-Client-Id", clientId)
+                .contentType(MediaType.APPLICATION_JSON).content(corpo))
+            .andExpect(status().isAccepted());
+
+        var captor = ArgumentCaptor.forClass(PerguntaMensagem.class);
+        verify(rabbitTemplate, org.mockito.Mockito.times(3)).convertAndSend(
+                eq(RabbitMQConfig.PERGUNTAS_EXCHANGE), eq(RabbitMQConfig.PERGUNTAS_ROUTING_KEY),
+                captor.capture(), any(MessagePostProcessor.class), any(CorrelationData.class));
+        var historico = captor.getValue().historico();
+        assertEquals(1, historico.size());
+        assertEquals("Um exemplo é uma receita.", historico.getFirst().resposta());
+
+        mockMvc.perform(post("/perguntas").header("X-Client-Id", sessoes.criarSessao())
+                .contentType(MediaType.APPLICATION_JSON).content(corpo))
+            .andExpect(status().isNotFound());
+    }
+
     private void simularResultado(boolean ack, boolean devolvida) {
         doAnswer(invocation -> {
             CorrelationData dados = invocation.getArgument(4);

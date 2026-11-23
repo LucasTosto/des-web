@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { Resposta } from "../interfaces/Resposta";
 import enviarPergunta from "../util/enviarPergunta";
@@ -8,10 +8,13 @@ import { abrirWebSocket } from "../util/websocket";
 interface Envio {
   id: string;
   pergunta: string;
+  continuacaoDe?: string;
 }
 
 const PerguntaForm = () => {
   const [texto, setTexto] = useState("");
+  const [contexto, setContexto] = useState<Envio>();
+  const campoPergunta = useRef<HTMLTextAreaElement>(null);
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
   const [clientId, setClientId] = useState<string>();
@@ -89,9 +92,10 @@ const PerguntaForm = () => {
     setErro("");
     setEnviando(true);
     try {
-      const confirmacao = await enviarPergunta({ texto: pergunta }, clientId);
-      setEnvios((atuais) => [{ id: confirmacao.correlation_id, pergunta }, ...atuais]);
+      const confirmacao = await enviarPergunta({ texto: pergunta, respostaAnteriorId: contexto?.id }, clientId);
+      setEnvios((atuais) => [{ id: confirmacao.correlation_id, pergunta, continuacaoDe: contexto?.pergunta }, ...atuais]);
       setTexto("");
+      setContexto(undefined);
     } catch (error) {
       setErro(error instanceof Error ? error.message : "Não foi possível enviar a pergunta.");
     } finally {
@@ -101,15 +105,24 @@ const PerguntaForm = () => {
 
   return (
     <form onSubmit={tratarEnvio} aria-busy={enviando} className="space-y-3">
+      {contexto && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md bg-gray-100 p-3 text-sm">
+          <p className="min-w-0 break-words">Continuando: <strong>{contexto.pergunta}</strong></p>
+          <button type="button" disabled={enviando} className="underline" onClick={() => setContexto(undefined)}>
+            Enviar sem contexto
+          </button>
+        </div>
+      )}
       <label htmlFor="pergunta" className="block font-semibold">Sua pergunta</label>
       <textarea
         id="pergunta"
+        ref={campoPergunta}
         value={texto}
         onChange={(event) => setTexto(event.target.value)}
         rows={5}
         required
         disabled={enviando}
-        placeholder="Ex.: O que é escopo em programação?"
+        placeholder={contexto ? "Ex.: Pode dar outro exemplo?" : "Ex.: O que é escopo em programação?"}
         className="block w-full rounded-md border border-gray-400 px-3 py-2 disabled:opacity-60"
       />
       <p role="status" className="text-sm text-gray-600">
@@ -130,16 +143,25 @@ const PerguntaForm = () => {
           Tentar conectar novamente
         </button>
       )}
-      {envios.map(({ id, pergunta }) => {
+      {envios.map((envio) => {
+        const { id, pergunta, continuacaoDe } = envio;
         const resposta = respostas[id];
         return (
           <article key={id} className="space-y-2 rounded-md border border-gray-300 p-4">
             <h2 className="font-semibold">{pergunta}</h2>
+            {continuacaoDe && <p className="break-words text-sm text-gray-600">Continuação de: {continuacaoDe}</p>}
             <p className="break-all text-sm">Identificador: {id}</p>
             {resposta ? (
               <div role="status" className={resposta.status === "OK" ? "text-gray-900" : "text-red-800"}>
                 <h3 className="font-semibold">{resposta.status === "OK" ? "Resposta da IA" : "Erro no processamento"}</h3>
                 <p className="whitespace-pre-wrap">{resposta.texto}</p>
+                {resposta.status === "OK" && (
+                  <button type="button" disabled={enviando || sessaoExpirada}
+                    className="mt-2 font-semibold text-green-700 underline"
+                    onClick={() => { setContexto(envio); campoPergunta.current?.focus(); }}>
+                    Continuar daqui
+                  </button>
+                )}
               </div>
             ) : (
               <p role="status" className="text-gray-600">

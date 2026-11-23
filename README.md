@@ -149,6 +149,12 @@ Em [localhost:5173](http://localhost:5173), espere aparecer **Conectado para rec
 
 Para parar os processos, use `Ctrl+C` nos respectivos terminais. Na raiz do clone, `docker compose stop` para o RabbitMQ sem excluir seu volume.
 
+### Continuar uma conversa
+
+Depois que chegar a resposta da IA, clique em **Continuar daqui** no cartão que você quer usar como referência. Por exemplo, pergunte “O que é um algoritmo?” e, depois da resposta, envie “Pode dar outro exemplo?”. Para fazer uma pergunta independente, não selecione um cartão ou clique em **Enviar sem contexto**.
+
+O React envia só o ID da resposta escolhida. O Gateway confere se ela pertence à mesma sessão e recupera até três trocas daquela sequência. Trechos longos do histórico são encurtados para caber no contexto do modelo. O Worker passa as perguntas anteriores como falas do aluno e as respostas anteriores como falas do tutor, antes da nova pergunta. Nem uma aba diferente nem uma sessão nova acessam essa conversa.
+
 ## Como testar
 
 - **Etapa 1 — formulário:** ligue RabbitMQ, Gateway e React, mas deixe o Worker desligado. Um envio válido mostra o ID; no HTTP, retorna `202`. Uma pergunta em branco retorna `400`. A versão original da etapa 1 não usava RabbitMQ e retornava `200`; esses testes são para a versão atual.

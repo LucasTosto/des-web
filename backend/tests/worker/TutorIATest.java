@@ -3,6 +3,7 @@ package br.uff.tutoria.worker.ia;
 import java.time.Duration;
 import java.util.List;
 
+import br.uff.tutoria.comum.dto.TurnoConversa;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -32,7 +33,7 @@ class TutorIATest {
     void deveEnviarPerguntaLiteralComInstrucaoSeparadaETemperatura() {
         when(modelo.call(any(Prompt.class))).thenReturn(resposta("Resposta"));
 
-        assertEquals("Resposta", tutor.responder("Instruções do tutor", "Explique {x}", 0.8));
+        assertEquals("Resposta", tutor.responder("Instruções do tutor", "Explique {x}", 0.8, List.of()));
 
         var captor = ArgumentCaptor.forClass(Prompt.class);
         verify(modelo).call(captor.capture());
@@ -48,7 +49,7 @@ class TutorIATest {
             .thenThrow(new TransientAiException("429"))
             .thenReturn(resposta(" "), resposta("Recuperou"));
 
-        assertEquals("Recuperou", tutor.responder("Tutor", "Pergunta", 0.0));
+        assertEquals("Recuperou", tutor.responder("Tutor", "Pergunta", 0.0, List.of()));
         verify(modelo, times(3)).call(any(Prompt.class));
     }
 
@@ -56,8 +57,23 @@ class TutorIATest {
     void naoDeveRepetirErroPermanente() {
         when(modelo.call(any(Prompt.class))).thenThrow(new IllegalArgumentException("Configuração inválida"));
 
-        assertThrows(IllegalArgumentException.class, () -> tutor.responder("Tutor", "Pergunta", 0.2));
+        assertThrows(IllegalArgumentException.class, () -> tutor.responder("Tutor", "Pergunta", 0.2, List.of()));
         verify(modelo).call(any(Prompt.class));
+    }
+
+    @Test
+    void deveEnviarAConversaAntesDaNovaPergunta() {
+        when(modelo.call(any(Prompt.class))).thenReturn(resposta("Outro exemplo"));
+        tutor.responder("Instruções", "Pode dar outro exemplo?", 0.2,
+                List.of(new TurnoConversa("O que é um algoritmo?", "Uma receita é um exemplo.")));
+
+        var captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(modelo).call(captor.capture());
+        var mensagens = captor.getValue().getInstructions();
+        assertEquals(4, mensagens.size());
+        assertEquals("O que é um algoritmo?", assertInstanceOf(UserMessage.class, mensagens.get(1)).getText());
+        assertEquals("Uma receita é um exemplo.", assertInstanceOf(AssistantMessage.class, mensagens.get(2)).getText());
+        assertEquals("Pode dar outro exemplo?", assertInstanceOf(UserMessage.class, mensagens.get(3)).getText());
     }
 
     private ChatResponse resposta(String texto) {
